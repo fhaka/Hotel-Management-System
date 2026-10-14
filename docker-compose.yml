@@ -1,0 +1,24 @@
+services:
+  db:
+    image: postgres:17-alpine
+    container_name: hotel-imperial-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: imperial
+      POSTGRES_PASSWORD: imperial
+      POSTGRES_DB: hotel_imperial
+    ports:
+      - "5435:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  mail:
+    image: axllent/mailpit:latest
+    container_name: hotel-imperial-mail
+    restart: unless-stopped
+    ports:
+      - "1025:1025" # SMTP
+      - "8025:8025" # Web inbox
+
+volumes:
+  pgdata:
