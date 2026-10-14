@@ -2,7 +2,7 @@ import { Check } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 export function Steps({ current }: { current: 1 | 2 | 3 }) {
-  const steps = ["Select room", "Guest & payment", "Confirmation"];
+  const steps = ["Select rooms", "Guest & payment", "Confirmation"];
   return (
     <ol className="flex items-center gap-2 text-xs font-medium sm:gap-4 sm:text-sm">
       {steps.map((s, i) => {

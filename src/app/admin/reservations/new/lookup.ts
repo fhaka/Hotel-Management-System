@@ -4,14 +4,14 @@ import { assertPermission } from "@/lib/auth/dal";
 import { findFreeRooms } from "@/lib/availability";
 import { db } from "@/lib/db";
 import { isISODate, parseISODate } from "@/lib/dates";
-import { quoteReservation } from "@/lib/reservations";
+import { quoteBooking } from "@/lib/reservations";
 
 export async function searchGuests(q: string) {
   await assertPermission("reservations");
   const term = q.trim();
   if (term.length < 2) return [];
   const parts = term.split(/\s+/);
-  const guests = await db.guest.findMany({
+  return db.guest.findMany({
     where: {
       AND: parts.map((p) => ({
         OR: [
@@ -26,24 +26,31 @@ export async function searchGuests(q: string) {
     orderBy: { lastName: "asc" },
     select: { id: true, firstName: true, lastName: true, email: true, phone: true, country: true, vip: true },
   });
-  return guests;
 }
 
-export async function checkAvailability(args: { roomTypeId: string; checkIn: string; checkOut: string; adults: number; children: number; extras: string[] }) {
+export type LineInput = { roomTypeId: string; adults: number; children: number };
+
+/** Free rooms per room type and the price of every line, for the staff booking form. */
+export async function checkAvailability(args: { checkIn: string; checkOut: string; lines: LineInput[]; extras: string[] }) {
   await assertPermission("reservations");
-  if (!args.roomTypeId || !isISODate(args.checkIn) || !isISODate(args.checkOut) || args.checkOut <= args.checkIn) return null;
+  if (!isISODate(args.checkIn) || !isISODate(args.checkOut) || args.checkOut <= args.checkIn || args.lines.length === 0) return null;
   const checkIn = parseISODate(args.checkIn);
   const checkOut = parseISODate(args.checkOut);
-  const [rooms, { quote }] = await Promise.all([
-    findFreeRooms(db, { roomTypeId: args.roomTypeId, checkIn, checkOut }),
-    quoteReservation({ roomTypeId: args.roomTypeId, checkIn, checkOut, adults: args.adults, children: args.children, extraServiceIds: args.extras }),
+  const typeIds = [...new Set(args.lines.map((l) => l.roomTypeId))];
+  const [freeByType, quote] = await Promise.all([
+    Promise.all(typeIds.map(async (id) => [id, await findFreeRooms(db, { roomTypeId: id, checkIn, checkOut })] as const)),
+    quoteBooking({ checkIn, checkOut, rooms: args.lines, extraServiceIds: args.extras }),
   ]);
+  const free = Object.fromEntries(freeByType.map(([id, rooms]) => [id, rooms.map((r) => ({ id: r.id, number: r.number, status: r.status }))]));
+  const shortages = typeIds.filter((id) => args.lines.filter((l) => l.roomTypeId === id).length > (free[id]?.length ?? 0));
   return {
-    rooms: rooms.map((r) => ({ id: r.id, number: r.number, status: r.status })),
+    free,
+    shortages,
+    lines: quote.rooms.map((r) => ({ total: r.total, roomTotal: r.roomTotal })),
+    roomTotal: quote.rooms.reduce((s, r) => s + r.roomTotal, 0),
+    cityTax: quote.rooms.reduce((s, r) => s + r.cityTax, 0),
+    extrasTotal: quote.rooms.reduce((s, r) => s + r.extrasTotal, 0),
     total: quote.total,
-    roomTotal: quote.roomTotal,
-    cityTax: quote.cityTax,
-    extrasTotal: quote.extrasTotal,
-    nights: quote.nightCount,
+    nights: quote.rooms[0]?.nightCount ?? 0,
   };
 }

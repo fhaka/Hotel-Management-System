@@ -19,7 +19,7 @@ import {
   type RoomStatus,
   type ServiceCategory,
 } from "../src/generated/prisma/client";
-import { addDays, eachNight, nightsBetween, parseISODate, toISODate, todayISO } from "../src/lib/dates";
+import { addDays, eachNight, nightsBetween, parseISODate, todayISO } from "../src/lib/dates";
 import { round2 } from "../src/lib/format";
 import { extraQuantity, nightlyRate, type SeasonLike } from "../src/lib/pricing";
 import { DEMO_PASSWORD } from "../src/lib/demo";
@@ -64,6 +64,8 @@ async function reset() {
     db.payment.deleteMany(),
     db.folioCharge.deleteMany(),
     db.reservation.deleteMany(),
+    db.reservationGroup.deleteMany(),
+    db.company.deleteMany(),
     db.housekeepingTask.deleteMany(),
     db.seasonalRate.deleteMany(),
     db.room.deleteMany(),
@@ -507,6 +509,69 @@ async function main() {
   for (const part of chunk(charges)) await db.folioCharge.createMany({ data: part as never });
   for (const part of chunk(payments)) await db.payment.createMany({ data: part as never });
   for (const part of chunk(invoices)) await db.invoice.createMany({ data: part as never });
+
+  // ─── Companies & group bookings ────────────────────────────────────────────
+  console.log("Creating companies and group bookings…");
+  const companySeed = [
+    { name: "Albtelecom Business Solutions sh.a.", taxId: "K81521001J", city: "Tirana", country: "Albania", address: "Rruga e Kavajës 45", contactName: "Elona Prifti", email: "travel@abs-demo.al", phone: "+355 4 223 0100" },
+    { name: "Adriatic Energy Partners sh.p.k.", taxId: "L72318004N", city: "Durrës", country: "Albania", address: "Lagjja 13, Rruga Taulantia", contactName: "Genti Muça", email: "admin@adriatic-energy-demo.al", phone: "+355 52 220 455" },
+    { name: "Balkan Trade Consulting GmbH", taxId: "ATU68213947", city: "Vienna", country: "Austria", address: "Mariahilfer Straße 101", contactName: "Katrin Huber", email: "office@balkantrade-demo.at", phone: "+43 1 5221 880" },
+    { name: "Mediterranean Events Ltd", taxId: "GB314159265", city: "London", country: "United Kingdom", address: "21 Bishopsgate", contactName: "Oliver Grant", email: "bookings@med-events-demo.co.uk", phone: "+44 20 7946 0321" },
+    { name: "Vlora Marine Logistics sh.p.k.", taxId: "M02419003C", city: "Vlorë", country: "Albania", address: "Rruga Ismail Qemali 8", contactName: "Arjola Hoxha", email: "finance@vloramarine-demo.al", phone: "+355 33 224 789" },
+    { name: "Studio Architettura Ricci S.r.l.", taxId: "IT04827130587", city: "Rome", country: "Italy", address: "Via del Corso 214", contactName: "Marco Ricci", email: "amministrazione@ricci-demo.it", phone: "+39 06 6789 120" },
+  ];
+  const companies = await Promise.all(companySeed.map((c) => db.company.create({ data: c })));
+  const companyAddress = (c: (typeof companies)[number]) => [c.address, c.city, c.country].filter(Boolean).join(", ");
+
+  // Corporate bookings are billed to a company.
+  const corporate = reservations.filter((r) => r.source === "CORPORATE");
+  for (const [i, r] of corporate.entries()) {
+    const company = companies[i % companies.length]!;
+    await db.reservation.update({ where: { id: r.id }, data: { companyId: company.id } });
+    await db.invoice.updateMany({ where: { reservationId: r.id }, data: { billTo: company.name, billToTaxId: company.taxId, billToAddress: companyAddress(company) } });
+  }
+
+  // Group bookings: rooms with identical upcoming (or in-house) dates booked together.
+  const occupants = ["Sofia Rossi", "Liam Becker", "Ana Krasniqi", "Noah Weber", "Mia Dervishi", "Luca Romano", "Ella Shehu", "Jonas Keller", "Klea Basha", "Leo Martin", "Iris Kola", "Max Fischer"];
+  const byDates = new Map<string, typeof reservations>();
+  for (const r of reservations) {
+    if (r.status !== "CONFIRMED" && r.status !== "CHECKED_IN") continue;
+    const key = `${r.status}|${r.checkIn.toISOString()}|${r.checkOut.toISOString()}`;
+    byDates.set(key, [...(byDates.get(key) ?? []), r]);
+  }
+  const candidates = [...byDates.values()].filter((list) => list.length >= 2);
+  const groupPlans = [
+    { name: "Morgan wedding party", company: null, size: 4, inHouse: false },
+    { name: "Mediterranean Events — Tirana summit", company: companies[3]!, size: 4, inHouse: false },
+    { name: "Balkan Trade Consulting delegation", company: companies[2]!, size: 3, inHouse: true },
+    { name: "Ricci family reunion", company: null, size: 3, inHouse: false },
+    { name: "Adriatic Energy board meeting", company: companies[1]!, size: 2, inHouse: false },
+    { name: "Studio Ricci site visit", company: companies[5]!, size: 2, inHouse: false },
+  ];
+  let groupNo = 0;
+  for (const plan of groupPlans) {
+    const list = candidates.find((l) => l.length >= 2 && (l[0]!.status === "CHECKED_IN") === plan.inHouse && !l[0]!.groupDone);
+    if (!list) continue;
+    const members = list.slice(0, plan.size);
+    for (const m of members) m.groupDone = true;
+    const booker = members[0]!.guestId;
+    const group = await db.reservationGroup.create({
+      data: { code: `HG${code().slice(2)}`, name: plan.name, bookerId: booker, companyId: plan.company?.id ?? null, singleBill: true, createdById: pick(frontDesk).id, createdAt: members[0]!.createdAt as Date },
+    });
+    for (const [i, m] of members.entries()) {
+      await db.reservation.update({
+        where: { id: m.id },
+        data: {
+          groupId: group.id,
+          guestId: booker,
+          companyId: plan.company?.id ?? null,
+          occupantName: i === 0 ? null : occupants[(groupNo * 3 + i) % occupants.length],
+          source: plan.company ? "CORPORATE" : m.source as BookingSource,
+        },
+      });
+    }
+    groupNo++;
+  }
 
   // ─── Room status & housekeeping ────────────────────────────────────────────
   console.log("Preparing housekeeping…");

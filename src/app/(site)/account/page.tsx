@@ -18,13 +18,16 @@ export default async function AccountPage() {
   const reservations = user.guest
     ? await db.reservation.findMany({
         where: { guestId: user.guest.id },
-        include: { roomType: true, charges: true, payments: true },
+        include: { roomType: true, charges: true, payments: true, group: { select: { code: true, _count: { select: { reservations: true } } } } },
         orderBy: { checkIn: "desc" },
       })
     : [];
   const t = today();
-  const upcoming = reservations.filter((r) => ["CONFIRMED", "PENDING", "CHECKED_IN"].includes(r.status) && r.checkOut >= t).reverse();
-  const past = reservations.filter((r) => !upcoming.includes(r));
+  // A group booking shows once, represented by its first room.
+  const seenGroups = new Set<string>();
+  const list = reservations.filter((r) => !r.groupId || (!seenGroups.has(r.groupId) && seenGroups.add(r.groupId)));
+  const upcoming = list.filter((r) => ["CONFIRMED", "PENDING", "CHECKED_IN"].includes(r.status) && r.checkOut >= t).reverse();
+  const past = list.filter((r) => !upcoming.includes(r));
 
   if (reservations.length === 0) {
     return (
@@ -64,13 +67,13 @@ export default async function AccountPage() {
   );
 }
 
-type Row = Awaited<ReturnType<typeof db.reservation.findMany<{ include: { roomType: true; charges: true; payments: true } }>>>[number];
+type Row = Awaited<ReturnType<typeof db.reservation.findMany<{ include: { roomType: true; charges: true; payments: true; group: { select: { code: true; _count: { select: { reservations: true } } } } } }>>>[number];
 
 function BookingCard({ r, compact }: { r: Row; compact?: boolean }) {
   const folio = summarizeFolio(r);
   return (
     <Link
-      href={`/manage-booking?code=${r.code}`}
+      href={`/manage-booking?code=${r.group?.code ?? r.code}`}
       className="group flex items-center gap-5 overflow-hidden rounded-2xl border border-border bg-white pr-5 transition-shadow hover:shadow-md"
     >
       <div className={compact ? "relative h-20 w-28 shrink-0" : "relative h-32 w-44 shrink-0"}>
@@ -78,14 +81,14 @@ function BookingCard({ r, compact }: { r: Row; compact?: boolean }) {
       </div>
       <div className="min-w-0 flex-1 py-3">
         <div className="flex flex-wrap items-center gap-2">
-          <p className={compact ? "font-medium" : "font-serif text-xl text-primary"}>{r.roomType.name}</p>
+          <p className={compact ? "font-medium" : "font-serif text-xl text-primary"}>{r.group ? `${r.group._count.reservations} rooms · group booking` : r.roomType.name}</p>
           <ReservationStatusBadge status={r.status} />
         </div>
         <p className="mt-1 text-sm text-muted-foreground">
           {formatDate(r.checkIn)} – {formatDate(r.checkOut)} · {pluralize(nightsBetween(r.checkIn, r.checkOut), "night")}
         </p>
         <p className="mt-1 text-xs text-muted-foreground">
-          Confirmation <span className="font-mono">{r.code}</span> · Total {formatMoney(folio.total)}
+          Confirmation <span className="font-mono">{r.group?.code ?? r.code}</span>{r.group ? "" : ` · Total ${formatMoney(folio.total)}`}
         </p>
       </div>
       <ChevronRight className="size-5 shrink-0 text-muted-foreground transition-transform group-hover:translate-x-0.5" />

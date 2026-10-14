@@ -210,19 +210,21 @@ export function VoidChargeButton({ chargeId, description }: { chargeId: string; 
   );
 }
 
-export function PaymentDialog({ id, balance }: { id: string; balance: number }) {
+type FormAction = (state: { error?: string; success?: string } | null, formData: FormData) => Promise<{ error?: string; success?: string } | null>;
+
+export function PaymentDialog({ id, balance, action, label = "Take payment", description }: { id: string; balance: number; action?: FormAction; label?: string; description?: string }) {
   const [method, setMethod] = useState("CARD");
   const [terminal, setTerminal] = useState(false);
   return (
     <FormDialog
       trigger={
         <Button size="sm">
-          <CreditCard /> Take payment
+          <CreditCard /> {label}
         </Button>
       }
-      title="Take payment"
-      description={`Outstanding balance: ${formatMoney(balance)}`}
-      action={recordPaymentAction.bind(null, id)}
+      title={label}
+      description={description ?? `Outstanding balance: ${formatMoney(balance)}`}
+      action={action ?? recordPaymentAction.bind(null, id)}
       submitLabel="Record payment"
     >
       <div className="grid grid-cols-2 gap-4">

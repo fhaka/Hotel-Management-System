@@ -22,7 +22,7 @@ export default async function SettingsPage() {
   return (
     <>
       <PageHeader title="Settings" description="Hotel details, taxes and policies used across the website, invoices and emails." />
-      <div className="grid gap-6 xl:grid-cols-[1fr_420px]">
+      <div className="grid gap-6 [&>*]:min-w-0 xl:grid-cols-[1fr_420px]">
         <Card>
           <CardHeader title="Hotel profile & policies" />
           <CardBody>

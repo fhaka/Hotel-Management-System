@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 import Link from "next/link";
-import { BedDouble, Crown, LogIn, LogOut, Mail, Plus, UserX } from "lucide-react";
+import { BedDouble, Crown, LogIn, LogOut, Mail, Plus, UserX, Users } from "lucide-react";
 import { ActionButton } from "@/components/action-ui";
 import { PageHeader } from "@/components/page-header";
 import { ROOM_STATUS, ReservationStatusBadge } from "@/components/status";
@@ -20,6 +20,7 @@ const include = {
   guest: true,
   room: true,
   roomType: true,
+  group: { select: { id: true, code: true } },
   charges: { select: { amount: true, vatRate: true, voided: true, type: true } },
   payments: { select: { amount: true, kind: true, status: true } },
 } as const;
@@ -103,6 +104,11 @@ export default async function FrontDeskPage({ searchParams }: { searchParams: Pr
                         {r.guest.firstName} {r.guest.lastName}
                       </Link>
                       {r.guest.vip && <Badge tone="gold" className="ml-2"><Crown className="size-3" /> VIP</Badge>}
+                      {r.group && (
+                        <Link href={`/admin/groups/${r.group.id}`} className="ml-2">
+                          <Badge tone="info"><Users className="size-3" /> {r.group.code}</Badge>
+                        </Link>
+                      )}
                       <p className="text-xs text-muted-foreground">
                         {r.code} · {r.adults + r.children} guests{r.estimatedArrival && r.status !== "CHECKED_IN" ? ` · ETA ${r.estimatedArrival}` : ""}
                       </p>
@@ -133,7 +139,7 @@ export default async function FrontDeskPage({ searchParams }: { searchParams: Pr
                           </ActionButton>
                         )}
                         {r.status === "CHECKED_IN" && current.key !== "arrivals" && (
-                          folio.balance > 0.004 ? (
+                          folio.balance > 0.004 && !r.group ? (
                             <ButtonLink href={`/admin/reservations/${r.id}`} size="sm" variant="outline">Settle bill</ButtonLink>
                           ) : (
                             <ActionButton size="sm" variant="gold" action={checkOutAction.bind(null, r.id)} confirm={`Check out ${r.guest.firstName} ${r.guest.lastName}?`}>

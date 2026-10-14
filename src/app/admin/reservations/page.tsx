@@ -1,12 +1,12 @@
 import type { Metadata } from "next";
 import Link from "next/link";
-import { BookOpenCheck, Download, Plus, Search } from "lucide-react";
+import { BookOpenCheck, Download, Plus, Search, Users } from "lucide-react";
 import { PageHeader } from "@/components/page-header";
 import { Pagination, PAGE_SIZE, buildHref, pageParam } from "@/components/pagination";
 import { ReservationStatusBadge, SOURCE_LABEL } from "@/components/status";
 import { Button, ButtonLink } from "@/components/ui/button";
 import { Input, Select } from "@/components/ui/form";
-import { Card, EmptyState, Table, Td, Th } from "@/components/ui/primitives";
+import { Badge, Card, EmptyState, Table, Td, Th } from "@/components/ui/primitives";
 import { requireStaff } from "@/lib/auth/dal";
 import { db } from "@/lib/db";
 import { formatDate, nightsBetween } from "@/lib/dates";
@@ -27,7 +27,7 @@ export default async function ReservationsPage({ searchParams }: { searchParams:
     db.reservation.count({ where }),
     db.reservation.findMany({
       where,
-      include: { guest: true, room: true, roomType: true, charges: { select: { amount: true, vatRate: true, voided: true, type: true } }, payments: { select: { amount: true, kind: true, status: true } } },
+      include: { guest: true, room: true, roomType: true, group: { select: { id: true, code: true } }, company: { select: { name: true } }, charges: { select: { amount: true, vatRate: true, voided: true, type: true } }, payments: { select: { amount: true, kind: true, status: true } } },
       orderBy: sp.dateField === "createdAt" ? { createdAt: "desc" } : [{ checkIn: "desc" }, { createdAt: "desc" }],
       skip: (page - 1) * PAGE_SIZE,
       take: PAGE_SIZE,
@@ -55,6 +55,12 @@ export default async function ReservationsPage({ searchParams }: { searchParams:
       />
 
       <div className="mb-4 flex flex-wrap gap-2">
+        <Link
+          href={href({ group: sp.group ? undefined : "1" })}
+          className={`flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-sm transition-colors ${sp.group ? "border-gold bg-gold text-white" : "border-border bg-white text-foreground hover:bg-muted"}`}
+        >
+          <Users className="size-3.5" /> Groups only
+        </Link>
         {[["", "All"], ["CONFIRMED", "Confirmed"], ["CHECKED_IN", "In house"], ["CHECKED_OUT", "Checked out"], ["CANCELLED", "Cancelled"], ["NO_SHOW", "No-show"]].map(([value, label]) => (
           <Link
             key={value}
@@ -70,9 +76,10 @@ export default async function ReservationsPage({ searchParams }: { searchParams:
       <Card>
         <form className="flex flex-wrap items-end gap-3 border-b border-border p-4">
           {sp.status && <input type="hidden" name="status" value={sp.status} />}
+          {sp.group && <input type="hidden" name="group" value={sp.group} />}
           <div className="relative min-w-60 flex-1">
             <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
-            <Input name="q" defaultValue={sp.q} placeholder="Guest name, email, confirmation # or room" className="pl-9" />
+            <Input name="q" defaultValue={sp.q} placeholder="Guest, email, confirmation #, room, group or company" className="pl-9" />
           </div>
           <Select name="dateField" defaultValue={sp.dateField ?? "checkIn"} className="w-40">
             <option value="checkIn">Arrival date</option>
@@ -113,9 +120,16 @@ export default async function ReservationsPage({ searchParams }: { searchParams:
                       <Link href={`/admin/reservations/${r.id}`} className="font-medium text-foreground group-hover:text-primary">
                         {r.guest.firstName} {r.guest.lastName}
                       </Link>
-                      <p className="text-xs text-muted-foreground">{r.adults + r.children} guests · {r.guest.country ?? "—"}</p>
+                      <p className="text-xs text-muted-foreground">{r.company ? r.company.name : `${r.adults + r.children} guests · ${r.guest.country ?? "—"}`}</p>
                     </Td>
-                    <Td className="font-mono text-xs">{r.code}</Td>
+                    <Td>
+                      <span className="font-mono text-xs">{r.code}</span>
+                      {r.group && (
+                        <Link href={`/admin/groups/${r.group.id}`} className="mt-0.5 block">
+                          <Badge tone="gold"><Users className="size-3" /> {r.group.code}</Badge>
+                        </Link>
+                      )}
+                    </Td>
                     <Td className="whitespace-nowrap">
                       {formatDate(r.checkIn)} → {formatDate(r.checkOut)}
                       <p className="text-xs text-muted-foreground">{nightsBetween(r.checkIn, r.checkOut)} nights</p>

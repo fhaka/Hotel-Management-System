@@ -38,7 +38,7 @@ export default async function CalendarPage({ searchParams }: { searchParams: Pro
     db.room.findMany({ where: { active: true, ...(sp.type ? { roomTypeId: sp.type } : {}) }, include: { roomType: { select: { name: true } } }, orderBy: [{ floor: "asc" }, { number: "asc" }] }),
     db.reservation.findMany({
       where: { roomId: { not: null }, status: { in: ["PENDING", "CONFIRMED", "CHECKED_IN", "CHECKED_OUT", "NO_SHOW"] }, checkIn: { lt: end }, checkOut: { gt: start } },
-      select: { id: true, roomId: true, checkIn: true, checkOut: true, status: true, guest: { select: { firstName: true, lastName: true, vip: true } } },
+      select: { id: true, roomId: true, checkIn: true, checkOut: true, status: true, groupId: true, group: { select: { code: true, name: true } }, guest: { select: { firstName: true, lastName: true, vip: true } } },
     }),
   ]);
   const byRoom = new Map<string, typeof reservations>();
@@ -70,6 +70,9 @@ export default async function CalendarPage({ searchParams }: { searchParams: Pro
           ))}
         </div>
         <div className="flex flex-wrap gap-3 text-xs text-muted-foreground">
+          <span className="flex items-center gap-1.5">
+            <span className="size-3 rounded border border-l-4 border-border border-l-gold bg-white" /> Group booking
+          </span>
           {(["CONFIRMED", "CHECKED_IN", "CHECKED_OUT", "NO_SHOW"] as const).map((s) => (
             <span key={s} className="flex items-center gap-1.5">
               <span className={cn("size-3 rounded border", BLOCK[s])} />
@@ -131,8 +134,8 @@ export default async function CalendarPage({ searchParams }: { searchParams: Pro
                             key={r.id}
                             href={`/admin/reservations/${r.id}`}
                             style={{ left: left + 2, width: Math.max(width, 18) }}
-                            className={cn("absolute top-1.5 z-[4] flex h-8 items-center overflow-hidden rounded-md border px-2 text-xs font-medium shadow-sm transition-transform hover:-translate-y-px hover:shadow", BLOCK[r.status])}
-                            title={`${r.guest.firstName} ${r.guest.lastName} · ${toISODate(r.checkIn)} → ${toISODate(r.checkOut)}`}
+                            className={cn("absolute top-1.5 z-[4] flex h-8 items-center overflow-hidden rounded-md border px-2 text-xs font-medium shadow-sm transition-transform hover:-translate-y-px hover:shadow", BLOCK[r.status], r.groupId && "border-l-4 border-l-gold")}
+                            title={`${r.guest.firstName} ${r.guest.lastName}${r.group ? ` · group ${r.group.name} (${r.group.code})` : ""} · ${toISODate(r.checkIn)} → ${toISODate(r.checkOut)}`}
                           >
                             <span className="truncate">
                               {r.guest.vip && "★ "}

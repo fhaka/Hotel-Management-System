@@ -21,6 +21,7 @@ export type OutgoingEmail = {
   html: string;
   template: string;
   reservationId?: string;
+  groupId?: string;
   attachments?: { filename: string; content: Buffer; contentType?: string }[];
 };
 
@@ -47,6 +48,7 @@ export async function sendEmail(email: OutgoingEmail): Promise<boolean> {
       status: error ? "FAILED" : "SENT",
       error,
       reservationId: email.reservationId ?? null,
+      groupId: email.groupId ?? null,
     },
   });
   return !error;

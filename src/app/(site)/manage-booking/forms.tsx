@@ -25,22 +25,22 @@ export function LookupForm({ defaultCode }: { defaultCode?: string }) {
   );
 }
 
-export function CancelBooking({ code, free, hours }: { code: string; free: boolean; hours: number }) {
+export function CancelBooking({ code, free, hours, rooms = 1 }: { code: string; free: boolean; hours: number; rooms?: number }) {
   const [open, setOpen] = useState(false);
   const { state, pending, formProps } = useActionForm(guestCancel, null);
   return (
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogTrigger asChild>
         <Button variant="danger-outline">
-          <XCircle /> Cancel reservation
+          <XCircle /> {rooms > 1 ? `Cancel all ${rooms} rooms` : "Cancel reservation"}
         </Button>
       </DialogTrigger>
       <DialogContent
-        title="Cancel your reservation?"
+        title={rooms > 1 ? `Cancel all ${rooms} rooms?` : "Cancel your reservation?"}
         description={
           free
             ? "Your reservation is within the free cancellation window. Any prepayment will be refunded in full."
-            : `The free cancellation window (${hours} hours before arrival) has passed. The first night will be charged.`
+            : `The free cancellation window (${hours} hours before arrival) has passed. The first night${rooms > 1 ? " of each room" : ""} will be charged.`
         }
       >
         {state?.success ? (

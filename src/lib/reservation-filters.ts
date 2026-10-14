@@ -3,7 +3,7 @@ import type { Prisma, ReservationStatus } from "@/generated/prisma/client";
 
 const STATUSES = ["PENDING", "CONFIRMED", "CHECKED_IN", "CHECKED_OUT", "CANCELLED", "NO_SHOW"];
 
-export type ReservationFilters = { q?: string; status?: string; from?: string; to?: string; dateField?: string };
+export type ReservationFilters = { q?: string; status?: string; from?: string; to?: string; dateField?: string; group?: string };
 
 export function reservationWhere(sp: ReservationFilters): Prisma.ReservationWhereInput {
   const where: Prisma.ReservationWhereInput = {};
@@ -15,8 +15,12 @@ export function reservationWhere(sp: ReservationFilters): Prisma.ReservationWher
       { guest: { lastName: { contains: q, mode: "insensitive" } } },
       { guest: { email: { contains: q, mode: "insensitive" } } },
       { room: { number: q } },
+      { group: { code: { contains: q, mode: "insensitive" } } },
+      { group: { name: { contains: q, mode: "insensitive" } } },
+      { company: { name: { contains: q, mode: "insensitive" } } },
     ];
   }
+  if (sp.group) where.groupId = { not: null };
   if (sp.status && STATUSES.includes(sp.status)) where.status = sp.status as ReservationStatus;
   const field = sp.dateField === "checkOut" ? "checkOut" : sp.dateField === "createdAt" ? "createdAt" : "checkIn";
   const range: Prisma.DateTimeFilter = {};

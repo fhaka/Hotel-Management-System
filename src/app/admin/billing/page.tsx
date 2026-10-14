@@ -107,7 +107,7 @@ async function Payments({ page }: { page: number }) {
 async function Invoices({ page }: { page: number }) {
   const [total, rows] = await Promise.all([
     db.invoice.count(),
-    db.invoice.findMany({ orderBy: { issuedAt: "desc" }, skip: (page - 1) * PAGE_SIZE, take: PAGE_SIZE, include: { reservation: { select: { id: true, code: true } } } }),
+    db.invoice.findMany({ orderBy: { issuedAt: "desc" }, skip: (page - 1) * PAGE_SIZE, take: PAGE_SIZE, include: { reservation: { select: { id: true, code: true } }, group: { select: { id: true, code: true } } } }),
   ]);
   return (
     <>
@@ -129,13 +129,16 @@ async function Invoices({ page }: { page: number }) {
             <tr key={i.id} className="hover:bg-surface/60">
               <Td className="font-mono text-xs font-medium">{i.number}</Td>
               <Td className="whitespace-nowrap">{formatDate(i.issuedAt)}</Td>
-              <Td><Link href={`/admin/reservations/${i.reservation.id}`} className="hover:text-primary">{i.billTo}</Link></Td>
+              <Td>
+                <Link href={i.group ? `/admin/groups/${i.group.id}` : `/admin/reservations/${i.reservation!.id}`} className="hover:text-primary">{i.billTo}</Link>
+                {(i.billToTaxId || i.group) && <p className="text-xs text-muted-foreground">{[i.billToTaxId && `NIPT ${i.billToTaxId}`, i.group && `Group ${i.group.code}`].filter(Boolean).join(" · ")}</p>}
+              </Td>
               <Td><Badge tone={INVOICE_STATUS[i.status].tone}>{INVOICE_STATUS[i.status].label}</Badge></Td>
               <Td className="text-right tabular-nums text-muted-foreground">{formatMoney(i.netTotal)}</Td>
               <Td className="text-right tabular-nums text-muted-foreground">{formatMoney(i.vatTotal)}</Td>
               <Td className="text-right font-medium tabular-nums">{formatMoney(i.total)}</Td>
               <Td className="text-right">
-                <a href={`/api/invoices/${i.reservation.code}?view`} target="_blank" className="text-xs font-medium text-primary hover:underline">PDF</a>
+                <a href={`/api/invoices/${i.group?.code ?? i.reservation!.code}?view`} target="_blank" className="text-xs font-medium text-primary hover:underline">PDF</a>
               </Td>
             </tr>
           ))}

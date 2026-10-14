@@ -10,14 +10,15 @@ import { audit } from "@/lib/audit";
 import { db } from "@/lib/db";
 import { isISODate, parseISODate, toISODate, today } from "@/lib/dates";
 import { formatMoney, toNumber } from "@/lib/format";
-import { sendReservationEmail, type ReservationEmailKind } from "@/lib/notifications";
+import { sendGroupEmail, sendReservationEmail, type ReservationEmailKind } from "@/lib/notifications";
 import {
   BookingError,
   assignRoom,
   cancelReservation,
   checkIn,
   checkOut,
-  createReservation,
+  createBooking,
+  MAX_ROOMS_PER_BOOKING,
   markNoShow,
   modifyStay,
   postCharge,
@@ -43,10 +44,12 @@ export async function checkOutAction(id: string): Promise<ActionState> {
   refresh();
   return attempt(async () => {
     const user = await assertPermission("frontDesk");
-    const invoice = await checkOut(id, user.id);
-    after(() => sendReservationEmail(id, "checkout"));
+    const result = await checkOut(id, user.id);
     refresh();
-    return `Checked out. Invoice ${invoice.number} issued and emailed.`;
+    if (!result.invoice) return "Checked out. Charges stay on the group bill until the last room departs.";
+    const groupId = result.groupInvoice ? result.groupId : null;
+    after(() => (groupId ? sendGroupEmail(groupId, "checkout") : sendReservationEmail(id, "checkout")));
+    return `Checked out. ${result.groupInvoice ? "Group invoice" : "Invoice"} ${result.invoice.number} issued and emailed.`;
   });
 }
 
@@ -207,58 +210,81 @@ export async function sendEmailAction(id: string, kind: ReservationEmailKind): P
   });
 }
 
+const roomsSchema = z
+  .array(
+    z.object({
+      roomTypeId: z.string().min(1, "Select a room type."),
+      roomId: z.string().optional(),
+      adults: z.number().int().min(1).max(10),
+      children: z.number().int().min(0).max(10),
+      occupantName: z.string().trim().max(80).optional(),
+    }),
+  )
+  .min(1, "Add at least one room.")
+  .max(MAX_ROOMS_PER_BOOKING);
+
 const newSchema = z
   .object({
+    groupId: z.string().optional(),
     guestId: z.string().optional(),
     firstName: z.string().trim().max(60).optional(),
     lastName: z.string().trim().max(60).optional(),
     email: z.union([z.literal(""), z.email("Enter a valid email.")]).optional(),
     phone: z.string().trim().max(30).optional(),
     country: z.string().trim().max(60).optional(),
-    roomTypeId: z.string().min(1, "Select a room type."),
-    roomId: z.string().optional(),
+    rooms: z.string().transform((v) => roomsSchema.parse(JSON.parse(v))),
     checkIn: z.string().refine(isISODate, "Select a check-in date."),
     checkOut: z.string().refine(isISODate, "Select a check-out date."),
-    adults: z.coerce.number().int().min(1).max(8),
-    children: z.coerce.number().int().min(0).max(6),
     source: z.enum(["WEBSITE", "WALK_IN", "PHONE", "EMAIL", "OTA", "CORPORATE"]),
+    companyId: z.string().optional(),
+    groupName: z.string().trim().max(100).optional(),
+    singleBill: z.string().optional(),
     extras: z.array(z.string()).default([]),
     specialRequests: z.string().max(1000).optional(),
     internalNotes: z.string().max(2000).optional(),
     sendConfirmation: z.string().optional(),
   })
   .superRefine((d, ctx) => {
-    if (!d.guestId && (!d.firstName || !d.lastName)) ctx.addIssue({ code: "custom", path: ["firstName"], message: "Select an existing guest or enter first and last name." });
+    if (!d.groupId && !d.guestId && (!d.firstName || !d.lastName)) ctx.addIssue({ code: "custom", path: ["firstName"], message: "Select an existing guest or enter first and last name." });
+    const picked = d.rooms.map((r) => r.roomId).filter(Boolean);
+    if (new Set(picked).size !== picked.length) ctx.addIssue({ code: "custom", path: ["rooms"], message: "The same room is selected twice." });
   });
 
 export async function createReservationAction(_: ActionState, formData: FormData): Promise<ActionState> {
   const result = await attempt(async () => {
     const user = await assertPermission("reservations");
     const d = newSchema.parse({ ...Object.fromEntries(formData), extras: formData.getAll("extras") });
-    let guest: Parameters<typeof createReservation>[0]["guest"];
+    let guest: Parameters<typeof createBooking>[0]["guest"];
     if (d.guestId) guest = { id: d.guestId };
     else if (d.email) guest = { firstName: d.firstName!, lastName: d.lastName!, email: d.email, phone: d.phone, country: d.country };
-    else {
-      const created = await db.guest.create({ data: { firstName: d.firstName!, lastName: d.lastName!, phone: d.phone || null, country: d.country || null } });
+    else if (d.firstName && d.lastName) {
+      const created = await db.guest.create({ data: { firstName: d.firstName, lastName: d.lastName, phone: d.phone || null, country: d.country || null } });
       guest = { id: created.id };
+    } else {
+      // Adding to an existing group: the group's booker is used.
+      const g = await db.reservationGroup.findUniqueOrThrow({ where: { id: d.groupId! } });
+      guest = { id: g.bookerId };
     }
-    const r = await createReservation({
+    const booking = await createBooking({
       guest,
-      roomTypeId: d.roomTypeId,
-      roomId: d.roomId || null,
+      groupId: d.groupId || null,
+      company: d.companyId ? { id: d.companyId } : null,
+      groupName: d.groupName,
+      singleBill: d.singleBill === "on",
+      rooms: d.rooms.map((r) => ({ ...r, roomId: r.roomId || null })),
       checkIn: parseISODate(d.checkIn),
       checkOut: parseISODate(d.checkOut),
-      adults: d.adults,
-      children: d.children,
       source: d.source,
       extraServiceIds: d.extras,
       specialRequests: d.specialRequests,
       internalNotes: d.internalNotes,
       createdById: user.id,
     });
-    if (d.sendConfirmation === "on") after(() => sendReservationEmail(r.id, "confirmation"));
+    const groupId = booking.group?.id;
+    const firstId = booking.reservations[0]!.id;
+    if (d.sendConfirmation === "on") after(() => (groupId ? sendGroupEmail(groupId, "confirmation") : sendReservationEmail(firstId, "confirmation")));
     refresh();
-    return `/admin/reservations/${r.id}`;
+    return groupId ? `/admin/groups/${groupId}` : `/admin/reservations/${firstId}`;
   });
   if (result?.success?.startsWith("/admin/")) redirect(`${result.success}?created=1`);
   return result;
@@ -270,11 +296,25 @@ export async function sendTomorrowRemindersAction(): Promise<ActionState> {
     const user = await assertPermission("frontDesk");
     const tomorrow = new Date(today().getTime() + 86_400_000);
     const arrivals = await db.reservation.findMany({
-      where: { checkIn: tomorrow, status: "CONFIRMED", guest: { email: { not: null } }, emails: { none: { template: "pre-arrival", status: "SENT" } } },
-      select: { id: true },
+      where: {
+        checkIn: tomorrow,
+        status: "CONFIRMED",
+        guest: { email: { not: null } },
+        emails: { none: { template: "pre-arrival", status: "SENT" } },
+        OR: [{ groupId: null }, { group: { emails: { none: { template: "pre-arrival", status: "SENT" } } } }],
+      },
+      select: { id: true, groupId: true },
     });
+    // One email per group booking, one per individual reservation.
+    const groups = new Set<string>();
     let sent = 0;
-    for (const a of arrivals) if (await sendReservationEmail(a.id, "pre-arrival")) sent++;
+    for (const a of arrivals) {
+      if (a.groupId) {
+        if (groups.has(a.groupId)) continue;
+        groups.add(a.groupId);
+        if (await sendGroupEmail(a.groupId, "pre-arrival")) sent++;
+      } else if (await sendReservationEmail(a.id, "pre-arrival")) sent++;
+    }
     await audit({ userId: user.id, action: "email.reminders", entity: "Reservation", summary: `Sent ${sent} pre-arrival reminders for ${toISODate(tomorrow)}` });
     refresh();
     return sent ? `Sent ${sent} pre-arrival emails for tomorrow's arrivals.` : "All of tomorrow's guests have already been reminded.";

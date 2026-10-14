@@ -17,6 +17,7 @@ export const NAV: NavGroup[] = [
       { href: "/admin/front-desk", label: "Front desk", icon: "ConciergeBell", permission: "frontDesk" },
       { href: "/admin/reservations", label: "Reservations", icon: "BookOpenCheck", permission: "reservations" },
       { href: "/admin/guests", label: "Guests", icon: "Users", permission: "guests" },
+      { href: "/admin/companies", label: "Companies", icon: "Building2", permission: "guests" },
       { href: "/admin/messages", label: "Messages", icon: "Inbox", permission: "messages" },
     ],
   },

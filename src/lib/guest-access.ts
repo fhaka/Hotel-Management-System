@@ -28,10 +28,20 @@ export async function unlockReservation(code: string) {
 }
 
 /** Whether the current visitor may view a reservation on the guest-facing site. */
-export async function canGuestView(r: { code: string; guestId: string }) {
+export async function canGuestView(r: { code: string; guestId: string; group?: { code: string } | null }) {
   const user = await getCurrentUser();
   if (user && (can(user.role, "reservations") || user.guest?.id === r.guestId)) return true;
+  // Unlocking a group booking also unlocks each of its rooms.
+  const codes = [r.code, ...(r.group ? [r.group.code] : [])];
   const recent = ((await cookies()).get(RECENT_COOKIE)?.value ?? "").split(",");
-  if (recent.includes(r.code)) return true;
-  return (await unlockedCodes()).includes(r.code);
+  if (codes.some((c) => recent.includes(c))) return true;
+  const unlocked = await unlockedCodes();
+  return codes.some((c) => unlocked.includes(c));
 }
+
+/** Whether the current visitor may view a group booking (booker, staff, or unlocked in this browser). */
+export async function canGuestViewGroup(g: { code: string; bookerId: string }) {
+  return canGuestView({ code: g.code, guestId: g.bookerId });
+}
+
+export const isGroupCode = (code: string) => /^HG[A-Z0-9]{6}$/i.test(code);

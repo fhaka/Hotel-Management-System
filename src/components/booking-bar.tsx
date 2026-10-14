@@ -66,13 +66,13 @@ export function BookingBar({
         <label className="flex-1">
           <span className={label}><Users className="size-3.5 text-gold" /> Adults</span>
           <select value={adults} onChange={(e) => setAdults(Number(e.target.value))} className={input}>
-            {[1, 2, 3, 4].map((n) => <option key={n} value={n}>{n}</option>)}
+            {Array.from({ length: 16 }, (_, i) => i + 1).map((n) => <option key={n} value={n}>{n}</option>)}
           </select>
         </label>
         <label className="flex-1">
           <span className={label}>Children</span>
           <select value={children} onChange={(e) => setChildren(Number(e.target.value))} className={input}>
-            {[0, 1, 2].map((n) => <option key={n} value={n}>{n}</option>)}
+            {Array.from({ length: 9 }, (_, i) => i).map((n) => <option key={n} value={n}>{n}</option>)}
           </select>
         </label>
       </div>

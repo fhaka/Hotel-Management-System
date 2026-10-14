@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { summarizeFolio } from "@/lib/folio";
+import { allocatePayment, summarizeFolio } from "@/lib/folio";
 
 describe("summarizeFolio", () => {
   const charges = [
@@ -24,5 +24,28 @@ describe("summarizeFolio", () => {
   });
   it("reports a credit as a negative balance", () => {
     expect(summarizeFolio({ charges, payments: [{ amount: 150, kind: "CHARGE", status: "SUCCEEDED" }] }).balance).toBe(-28);
+  });
+});
+
+describe("allocatePayment", () => {
+  const balances = [
+    { id: "a", balance: 100 },
+    { id: "b", balance: 250 },
+    { id: "c", balance: 0 },
+  ];
+  it("settles the largest balances first", () => {
+    expect(allocatePayment(balances, 300)).toEqual([
+      { id: "b", amount: 250 },
+      { id: "a", amount: 50 },
+    ]);
+  });
+  it("puts an overpayment on the first folio as credit", () => {
+    expect(allocatePayment(balances, 400)).toEqual([
+      { id: "b", amount: 300 },
+      { id: "a", amount: 100 },
+    ]);
+  });
+  it("handles groups that are already settled", () => {
+    expect(allocatePayment([{ id: "a", balance: 0 }], 20)).toEqual([{ id: "a", amount: 20 }]);
   });
 });

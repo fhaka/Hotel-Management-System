@@ -48,6 +48,8 @@ export type EmailReservation = {
   guestFirstName: string;
   guestEmail: string;
   roomTypeName: string;
+  /** Set for multi-room bookings: one line per room. */
+  rooms?: string[];
   checkIn: Date;
   checkOut: Date;
   nights: number;
@@ -66,7 +68,9 @@ function stayRows(r: EmailReservation, hotel: HotelConfig) {
   const guests = `${pluralize(r.adults, "adult")}${r.children ? `, ${pluralize(r.children, "child", "children")}` : ""}`;
   return rows([
     ["Confirmation number", r.code],
-    ["Room", r.roomTypeName],
+    ...(r.rooms && r.rooms.length > 1
+      ? r.rooms.map((room, i): [string, string] => [`Room ${i + 1}`, room])
+      : [["Room", r.roomTypeName] as [string, string]]),
     ["Check-in", `${formatLongDate(r.checkIn)} from ${hotel.checkInTime}`],
     ["Check-out", `${formatLongDate(r.checkOut)} until ${hotel.checkOutTime}`],
     ["Guests", guests],

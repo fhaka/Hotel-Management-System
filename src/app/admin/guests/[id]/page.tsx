@@ -53,7 +53,7 @@ export default async function GuestPage({ params }: { params: Promise<{ id: stri
         <StatCard label="Nights stayed" value={nights} />
         <StatCard label="Lifetime value" value={formatMoney(lifetime)} hint={completed.length ? `${formatMoney(lifetime / completed.length)} per stay` : undefined} />
       </div>
-      <div className="grid gap-6 xl:grid-cols-[1fr_420px]">
+      <div className="grid gap-6 [&>*]:min-w-0 xl:grid-cols-[1fr_420px]">
         <Card>
           <CardHeader title="Stay history" />
           {guest.reservations.length === 0 ? (

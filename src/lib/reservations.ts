@@ -3,7 +3,7 @@ import { db } from "@/lib/db";
 import { audit } from "@/lib/audit";
 import { ACTIVE_STATUSES, findFreeRooms, isRoomFree } from "@/lib/availability";
 import { addDays, nightsBetween, today, toISODate } from "@/lib/dates";
-import { summarizeFolio } from "@/lib/folio";
+import { allocatePayment, summarizeFolio } from "@/lib/folio";
 import { round2, toNumber, formatMoney } from "@/lib/format";
 import { quoteStay, type Quote } from "@/lib/pricing";
 import { getSettings, type HotelConfig } from "@/lib/settings";
@@ -104,23 +104,43 @@ function stayCharges(reservationId: string, roomTypeName: string, quote: Quote, 
   return rows;
 }
 
-// ─── Create ────────────────────────────────────────────────────────────────
+/// ─── Create ────────────────────────────────────────────────────────────────
 
 export type GuestInput =
   | { id: string }
   | { firstName: string; lastName: string; email: string; phone?: string | null; country?: string | null; userId?: string | null };
 
-export type CreateReservationInput = StayRequest & {
+export type CompanyInput =
+  | { id: string }
+  | { name: string; taxId?: string | null; address?: string | null; city?: string | null; country?: string | null; email?: string | null };
+
+export type RoomRequest = { roomTypeId: string; adults: number; children: number; roomId?: string | null; occupantName?: string | null };
+
+export type PaymentInput = { amount: number; method: PaymentMethod; provider: string; reference: string | null; brand?: string | null; last4?: string | null; processedById?: string | null };
+
+export type CreateBookingInput = {
+  checkIn: Date;
+  checkOut: Date;
+  rooms: RoomRequest[];
+  extraServiceIds?: string[];
   guest: GuestInput;
+  company?: CompanyInput | null;
   source: BookingSource;
-  roomId?: string | null;
+  groupName?: string | null;
+  singleBill?: boolean;
+  /** Adds the rooms to an existing group (its booker and company are used). */
+  groupId?: string | null;
   specialRequests?: string | null;
   estimatedArrival?: string | null;
   internalNotes?: string | null;
   createdById?: string | null;
   allowPast?: boolean;
-  payment?: { amount: number; method: PaymentMethod; provider: string; reference: string | null; brand?: string | null; last4?: string | null; processedById?: string | null };
+  payment?: PaymentInput;
 };
+
+export type CreateReservationInput = StayRequest & Omit<CreateBookingInput, "rooms" | "checkIn" | "checkOut"> & { roomId?: string | null };
+
+export const MAX_ROOMS_PER_BOOKING = 8;
 
 async function resolveGuest(tx: Tx, guest: GuestInput) {
   if ("id" in guest) return tx.guest.findUniqueOrThrow({ where: { id: guest.id } });
@@ -148,106 +168,239 @@ async function resolveGuest(tx: Tx, guest: GuestInput) {
   });
 }
 
-export async function createReservation(input: CreateReservationInput) {
-  const roomType = await validateStay(input, { allowPast: input.allowPast });
-  const { quote, settings } = await quoteReservation(input);
+/** Finds a company by id or tax number (NIPT), or creates it. */
+export async function resolveCompany(tx: Tx | typeof db, company: CompanyInput) {
+  if ("id" in company) return tx.company.findUniqueOrThrow({ where: { id: company.id } });
+  const taxId = company.taxId?.trim().toUpperCase() || null;
+  const data = {
+    name: company.name.trim(),
+    address: company.address?.trim() || null,
+    city: company.city?.trim() || null,
+    country: company.country?.trim() || null,
+    email: company.email?.trim().toLowerCase() || null,
+  };
+  if (taxId) {
+    const existing = await tx.company.findUnique({ where: { taxId } });
+    if (existing) {
+      return tx.company.update({
+        where: { id: existing.id },
+        data: { address: data.address ?? existing.address, city: data.city ?? existing.city, country: data.country ?? existing.country, email: data.email ?? existing.email },
+      });
+    }
+  }
+  return tx.company.create({ data: { ...data, taxId } });
+}
 
-  // Retry when a concurrent booking takes the chosen room (enforced by the database exclusion constraint).
+async function newGroupCode(tx: Tx) {
+  for (;;) {
+    const code = `HG${randomCode(6)}`;
+    if (!(await tx.reservationGroup.findUnique({ where: { code }, select: { id: true } }))) return code;
+  }
+}
+
+export type BookingQuote = {
+  rooms: (Quote & { roomTypeId: string; roomTypeName: string })[];
+  total: number;
+  vatIncluded: number;
+  settings: HotelConfig;
+};
+
+/**
+ * Prices every room of a booking. Per-guest extras (e.g. breakfast) apply to every room using that room's
+ * guests; other extras (e.g. an airport transfer) are charged once, on the first room.
+ */
+export async function quoteBooking(args: { checkIn: Date; checkOut: Date; rooms: Omit<RoomRequest, "roomId">[]; extraServiceIds?: string[] }): Promise<BookingQuote> {
+  const typeIds = [...new Set(args.rooms.map((r) => r.roomTypeId))];
+  const [types, seasons, settings, extras] = await Promise.all([
+    db.roomType.findMany({ where: { id: { in: typeIds } } }),
+    db.seasonalRate.findMany({ where: { startDate: { lt: args.checkOut }, endDate: { gt: args.checkIn } } }),
+    getSettings(),
+    args.extraServiceIds?.length ? db.service.findMany({ where: { id: { in: args.extraServiceIds }, active: true, bookable: true } }) : [],
+  ]);
+  const rooms = args.rooms.map((req, i) => {
+    const roomType = types.find((t) => t.id === req.roomTypeId);
+    if (!roomType) throw new BookingError("This room type is not available.");
+    const quote = quoteStay({
+      roomType,
+      seasons,
+      checkIn: args.checkIn,
+      checkOut: args.checkOut,
+      adults: req.adults,
+      children: req.children,
+      extras: extras.filter((e) => e.perGuest || i === 0),
+      cityTaxPerPersonNight: settings.cityTaxPerPersonNight,
+      vatRate: settings.vatRate,
+    });
+    return { ...quote, roomTypeId: roomType.id, roomTypeName: roomType.name };
+  });
+  return {
+    rooms,
+    total: round2(rooms.reduce((s, r) => s + r.total, 0)),
+    vatIncluded: round2(rooms.reduce((s, r) => s + r.vatIncluded, 0)),
+    settings,
+  };
+}
+
+/**
+ * Creates a booking of one or more rooms for the same dates. Two or more rooms form a group with its own
+ * confirmation code; each room is a full reservation with its own room, folio and lifecycle.
+ * A payment, if given, is split across the rooms by their totals.
+ */
+export async function createBooking(input: CreateBookingInput) {
+  if (input.rooms.length === 0) throw new BookingError("Select at least one room.");
+  if (input.rooms.length > MAX_ROOMS_PER_BOOKING) {
+    throw new BookingError(`Bookings are limited to ${MAX_ROOMS_PER_BOOKING} rooms. Please contact us for larger groups.`);
+  }
+  const roomTypes = new Map<string, Awaited<ReturnType<typeof validateStay>>>();
+  for (const room of input.rooms) {
+    roomTypes.set(room.roomTypeId, await validateStay({ ...room, checkIn: input.checkIn, checkOut: input.checkOut }, { allowPast: input.allowPast }));
+  }
+  const quote = await quoteBooking(input);
+  const { settings } = quote;
+  const isGroup = input.rooms.length > 1 && !input.groupId;
+
+  // Retry when a concurrent booking takes a chosen room (enforced by the database exclusion constraint).
   for (let attempt = 0; attempt < 4; attempt++) {
     try {
       return await db.$transaction(async (tx) => {
-        let roomId = input.roomId ?? null;
-        if (roomId) {
-          const room = await tx.room.findUnique({ where: { id: roomId } });
-          if (!room || room.roomTypeId !== input.roomTypeId) throw new BookingError("The selected room does not match the room type.");
-          if (!(await isRoomFree(tx, roomId, input.checkIn, input.checkOut))) throw new BookingError(`Room ${room.number} is not available for these dates.`);
-        } else {
-          const free = await findFreeRooms(tx, { roomTypeId: input.roomTypeId, checkIn: input.checkIn, checkOut: input.checkOut });
-          const choice = free[attempt] ?? free[0];
-          if (!choice) throw new BookingError(`Sorry — the ${roomType.name} is sold out for these dates.`);
-          roomId = choice.id;
-        }
+        const existing = input.groupId ? await tx.reservationGroup.findUniqueOrThrow({ where: { id: input.groupId }, include: { invoice: true } }) : null;
+        if (existing?.invoice) throw new BookingError(`Group ${existing.code} has already been invoiced; start a new booking instead.`);
+        const guest = await resolveGuest(tx, existing ? { id: existing.bookerId } : input.guest);
+        const companyInput = existing ? (existing.companyId ? { id: existing.companyId } : null) : input.company;
+        const company = companyInput ? await resolveCompany(tx, companyInput) : null;
+        const group =
+          existing ??
+          (isGroup
+            ? await tx.reservationGroup.create({
+                data: {
+                  code: await newGroupCode(tx),
+                  name: input.groupName?.trim() || (company ? company.name : `${guest.firstName} ${guest.lastName} party`),
+                  bookerId: guest.id,
+                  companyId: company?.id ?? null,
+                  singleBill: input.singleBill ?? true,
+                  createdById: input.createdById ?? null,
+                },
+              })
+            : null);
 
-        const guest = await resolveGuest(tx, input.guest);
-        const reservation = await tx.reservation.create({
-          data: {
-            code: await newReservationCode(tx),
-            guestId: guest.id,
-            roomTypeId: input.roomTypeId,
-            roomId,
-            checkIn: input.checkIn,
-            checkOut: input.checkOut,
-            adults: input.adults,
-            children: input.children,
-            status: "CONFIRMED",
-            source: input.source,
-            specialRequests: input.specialRequests || null,
-            estimatedArrival: input.estimatedArrival || null,
-            internalNotes: input.internalNotes || null,
-            createdById: input.createdById ?? null,
-          },
-        });
+        const reservations = [];
+        for (const [i, req] of input.rooms.entries()) {
+          const roomType = roomTypes.get(req.roomTypeId)!;
+          let roomId = req.roomId ?? null;
+          if (roomId) {
+            const room = await tx.room.findUnique({ where: { id: roomId } });
+            if (!room || room.roomTypeId !== req.roomTypeId) throw new BookingError("The selected room does not match the room type.");
+            if (!(await isRoomFree(tx, roomId, input.checkIn, input.checkOut))) throw new BookingError(`Room ${room.number} is not available for these dates.`);
+          } else {
+            // Rooms inserted earlier in this transaction are already excluded.
+            const free = await findFreeRooms(tx, { roomTypeId: req.roomTypeId, checkIn: input.checkIn, checkOut: input.checkOut });
+            const choice = free[attempt] ?? free[0];
+            if (!choice) throw new BookingError(`Sorry — not enough rooms of type ${roomType.name} are available for these dates.`);
+            roomId = choice.id;
+          }
 
-        const charges = stayCharges(reservation.id, roomType.name, quote, settings, input.adults, input.createdById ?? null);
-        for (const e of quote.extras) {
-          charges.push({
-            reservationId: reservation.id,
-            type: "SERVICE",
-            description: e.name,
-            date: input.checkIn,
-            quantity: e.quantity,
-            unitPrice: e.unitPrice,
-            amount: e.amount,
-            vatRate: settings.vatRate,
-            serviceId: e.serviceId,
-            postedById: input.createdById ?? null,
-          });
-        }
-        await tx.folioCharge.createMany({ data: charges });
-
-        if (input.payment) {
-          await tx.payment.create({
+          const reservation = await tx.reservation.create({
             data: {
-              reservationId: reservation.id,
-              amount: input.payment.amount,
-              method: input.payment.method,
-              provider: input.payment.provider,
-              providerRef: input.payment.reference,
-              cardBrand: input.payment.brand ?? null,
-              cardLast4: input.payment.last4 ?? null,
-              processedById: input.payment.processedById ?? null,
+              code: await newReservationCode(tx),
+              guestId: guest.id,
+              groupId: group?.id ?? null,
+              companyId: company?.id ?? null,
+              occupantName: req.occupantName?.trim() || null,
+              roomTypeId: req.roomTypeId,
+              roomId,
+              checkIn: input.checkIn,
+              checkOut: input.checkOut,
+              adults: req.adults,
+              children: req.children,
+              status: "CONFIRMED",
+              source: input.source,
+              specialRequests: input.specialRequests || null,
+              estimatedArrival: input.estimatedArrival || null,
+              internalNotes: input.internalNotes || null,
+              createdById: input.createdById ?? null,
             },
           });
+
+          const roomQuote = quote.rooms[i]!;
+          const charges = stayCharges(reservation.id, roomType.name, roomQuote, settings, req.adults, input.createdById ?? null);
+          for (const e of roomQuote.extras) {
+            charges.push({
+              reservationId: reservation.id,
+              type: "SERVICE",
+              description: e.name,
+              date: input.checkIn,
+              quantity: e.quantity,
+              unitPrice: e.unitPrice,
+              amount: e.amount,
+              vatRate: settings.vatRate,
+              serviceId: e.serviceId,
+              postedById: input.createdById ?? null,
+            });
+          }
+          await tx.folioCharge.createMany({ data: charges });
+          reservations.push(reservation);
         }
 
-        await audit(
-          {
-            userId: input.createdById,
-            action: "reservation.create",
-            entity: "Reservation",
-            entityId: reservation.id,
-            summary: `Created reservation ${reservation.code} for ${guest.firstName} ${guest.lastName} (${toISODate(input.checkIn)} → ${toISODate(input.checkOut)})`,
-          },
-          tx,
-        );
-        return reservation;
+        if (input.payment) {
+          const parts = allocatePayment(
+            reservations.map((r, i) => ({ id: r.id, balance: quote.rooms[i]!.total })),
+            input.payment.amount,
+          );
+          for (const part of parts) {
+            await tx.payment.create({
+              data: {
+                reservationId: part.id,
+                amount: part.amount,
+                method: input.payment.method,
+                provider: input.payment.provider,
+                providerRef: input.payment.reference,
+                cardBrand: input.payment.brand ?? null,
+                cardLast4: input.payment.last4 ?? null,
+                processedById: input.payment.processedById ?? null,
+                note: group ? `Group ${group.code}` : null,
+              },
+            });
+          }
+        }
+
+        const dates = `${toISODate(input.checkIn)} → ${toISODate(input.checkOut)}`;
+        for (const r of reservations) {
+          await audit(
+            {
+              userId: input.createdById,
+              action: "reservation.create",
+              entity: "Reservation",
+              entityId: r.id,
+              summary: `Created reservation ${r.code}${group ? ` (group ${group.code})` : ""} for ${guest.firstName} ${guest.lastName} (${dates})`,
+            },
+            tx,
+          );
+        }
+        return { group, reservations, guest, company };
       });
     } catch (e) {
       if (isOverlapError(e) && attempt < 3) continue;
-      if (isOverlapError(e)) throw new BookingError("That room was just booked by someone else. Please try again.");
+      if (isOverlapError(e)) throw new BookingError("A room was just booked by someone else. Please try again.");
       throw e;
     }
   }
   throw new BookingError("Unable to complete the booking. Please try again.");
 }
 
+/** Single-room convenience wrapper around createBooking. */
+export async function createReservation(input: CreateReservationInput) {
+  const { roomTypeId, adults, children, roomId, ...rest } = input;
+  const { reservations } = await createBooking({ ...rest, rooms: [{ roomTypeId, adults, children, roomId }] });
+  return reservations[0]!;
+}
+
 /**
- * Website checkout: optionally charges the card first, then creates the reservation.
- * If the reservation cannot be created after a successful charge, the charge is refunded.
+ * Website checkout: optionally charges the card for the whole booking first, then creates it.
+ * If the booking cannot be created after a successful charge, the charge is refunded.
  */
-export async function bookOnline(input: Omit<CreateReservationInput, "payment" | "source"> & { card?: CardDetails }) {
-  const { quote } = await quoteReservation(input);
-  let payment: CreateReservationInput["payment"];
+export async function bookOnline(input: Omit<CreateBookingInput, "payment" | "source"> & { card?: CardDetails }) {
+  const quote = await quoteBooking(input);
+  let payment: PaymentInput | undefined;
   if (input.card) {
     const provider = getPaymentProvider();
     const result = await provider.charge({ amount: quote.total, card: input.card, description: "Hotel Imperial reservation" });
@@ -255,7 +408,7 @@ export async function bookOnline(input: Omit<CreateReservationInput, "payment" |
     payment = { amount: quote.total, method: "CARD", provider: provider.name, reference: result.reference, brand: result.brand, last4: result.last4 };
   }
   try {
-    return await createReservation({ ...input, source: "WEBSITE", payment });
+    return await createBooking({ ...input, source: "WEBSITE", payment });
   } catch (e) {
     if (payment) await getPaymentProvider().refund({ reference: payment.reference, amount: payment.amount });
     throw e;
@@ -271,6 +424,8 @@ export const reservationInclude = {
   charges: { orderBy: [{ date: "asc" }, { createdAt: "asc" }], include: { postedBy: { select: { name: true } } } },
   payments: { orderBy: { createdAt: "asc" }, include: { processedBy: { select: { name: true } } } },
   invoice: true,
+  company: true,
+  group: { select: { id: true, code: true, name: true, singleBill: true, companyId: true } },
   createdBy: { select: { name: true } },
 } satisfies Prisma.ReservationInclude;
 
@@ -336,18 +491,58 @@ async function nextInvoiceNumber(tx: Tx) {
   return `INV-${year}-${String(seq).padStart(5, "0")}`;
 }
 
+type BillParty = {
+  firstName: string;
+  lastName: string;
+  address: string | null;
+  city: string | null;
+  country: string | null;
+};
+type BillCompany = { name: string; taxId: string | null; address: string | null; city: string | null; country: string | null } | null;
+
+/** Who an invoice is addressed to: the company when there is one, otherwise the guest. */
+export function billingParty(guest: BillParty, company: BillCompany) {
+  const join = (...parts: (string | null)[]) => parts.filter(Boolean).join(", ") || null;
+  if (company) return { billTo: company.name, billToTaxId: company.taxId, billToAddress: join(company.address, company.city, company.country) };
+  return { billTo: `${guest.firstName} ${guest.lastName}`, billToTaxId: null, billToAddress: join(guest.address, guest.city, guest.country) };
+}
+
 export async function issueInvoice(tx: Tx, reservationId: string) {
-  const r = await tx.reservation.findUniqueOrThrow({ where: { id: reservationId }, include: { guest: true, charges: true, payments: true, invoice: true } });
+  const r = await tx.reservation.findUniqueOrThrow({ where: { id: reservationId }, include: { guest: true, company: true, charges: true, payments: true, invoice: true } });
   const folio = summarizeFolio(r);
   const data = {
     netTotal: folio.net,
     vatTotal: folio.vat,
     total: folio.total,
-    billTo: `${r.guest.firstName} ${r.guest.lastName}`,
+    ...billingParty(r.guest, r.company),
     status: folio.balance <= 0.004 ? ("PAID" as const) : ("ISSUED" as const),
   };
   if (r.invoice) return tx.invoice.update({ where: { id: r.invoice.id }, data });
   return tx.invoice.create({ data: { ...data, reservationId, number: await nextInvoiceNumber(tx) } });
+}
+
+/** One invoice covering every room of a single-bill group. */
+export async function issueGroupInvoice(tx: Tx, groupId: string) {
+  const g = await tx.reservationGroup.findUniqueOrThrow({
+    where: { id: groupId },
+    include: { booker: true, company: true, invoice: true, reservations: { include: { charges: true, payments: true } } },
+  });
+  const folio = summarizeFolio({ charges: g.reservations.flatMap((r) => r.charges), payments: g.reservations.flatMap((r) => r.payments) });
+  const data = {
+    netTotal: folio.net,
+    vatTotal: folio.vat,
+    total: folio.total,
+    ...billingParty(g.booker, g.company),
+    status: folio.balance <= 0.004 ? ("PAID" as const) : ("ISSUED" as const),
+  };
+  if (g.invoice) return tx.invoice.update({ where: { id: g.invoice.id }, data });
+  return tx.invoice.create({ data: { ...data, groupId, number: await nextInvoiceNumber(tx) } });
+}
+
+/** The folio of a whole group (all rooms' charges and payments). */
+export async function groupFolio(client: Tx | typeof db, groupId: string) {
+  const rooms = await client.reservation.findMany({ where: { groupId }, include: { charges: true, payments: true } });
+  return summarizeFolio({ charges: rooms.flatMap((r) => r.charges), payments: rooms.flatMap((r) => r.payments) });
 }
 
 /** Re-prices room nights and city tax for the reservation's current dates. */
@@ -361,8 +556,14 @@ async function repriceStay(tx: Tx, reservationId: string, postedById: string | n
   await tx.folioCharge.createMany({ data: stayCharges(reservationId, r.roomType.name, quote, settings, r.adults, postedById) });
 }
 
-export async function checkOut(id: string, userId: string) {
-  const r = await db.reservation.findUniqueOrThrow({ where: { id }, include: { room: true } });
+export type CheckOutResult = { invoice: { number: string } | null; groupInvoice: boolean; groupId: string | null };
+
+/**
+ * Checks a guest out. Rooms of a single-bill group roll their charges onto the group bill: the group must be
+ * settled only when its last room departs, which issues one group invoice.
+ */
+export async function checkOut(id: string, userId: string): Promise<CheckOutResult> {
+  const r = await db.reservation.findUniqueOrThrow({ where: { id }, include: { room: true, group: true } });
   if (r.status !== "CHECKED_IN") throw new BookingError("Only in-house guests can be checked out.");
   const t = today();
 
@@ -377,11 +578,18 @@ export async function checkOut(id: string, userId: string) {
     });
   }
 
-  const invoice = await db.$transaction(async (tx) => {
-    const fresh = await tx.reservation.findUniqueOrThrow({ where: { id }, include: { charges: true, payments: true } });
-    const folio = summarizeFolio(fresh);
-    if (folio.balance > 0.004) throw new BookingError(`Outstanding balance of ${formatMoney(folio.balance)} must be settled before check-out.`);
-    if (folio.balance < -0.004) throw new BookingError(`The guest has a credit of ${formatMoney(-folio.balance)}. Refund it before check-out.`);
+  return db.$transaction(async (tx): Promise<CheckOutResult> => {
+    // Single-bill group: is anyone else from the group still to depart?
+    const groupBill = r.group?.singleBill ? r.group : null;
+    const othersStaying = groupBill
+      ? await tx.reservation.count({ where: { groupId: groupBill.id, id: { not: id }, status: { in: ["PENDING", "CONFIRMED", "CHECKED_IN"] } } })
+      : 0;
+    const folio = groupBill ? await groupFolio(tx, groupBill.id) : summarizeFolio(await tx.reservation.findUniqueOrThrow({ where: { id }, include: { charges: true, payments: true } }));
+    const whose = groupBill ? `The group bill (${groupBill.code})` : "The guest";
+    if (!groupBill || othersStaying === 0) {
+      if (folio.balance > 0.004) throw new BookingError(`${groupBill ? "Group bill" : "Outstanding"} balance of ${formatMoney(folio.balance)} must be settled before ${groupBill ? "the last room checks out" : "check-out"}.`);
+      if (folio.balance < -0.004) throw new BookingError(`${whose} has a credit of ${formatMoney(-folio.balance)}. Refund it before check-out.`);
+    }
 
     await tx.reservation.update({ where: { id }, data: { status: "CHECKED_OUT", checkedOutAt: new Date() } });
     if (r.roomId) {
@@ -393,11 +601,15 @@ export async function checkOut(id: string, userId: string) {
         await tx.housekeepingTask.create({ data: { roomId: r.roomId, type: "CHECKOUT_CLEAN", priority: "HIGH", dueDate: t, notes: `Departure of ${r.code}` } });
       }
     }
-    const inv = await issueInvoice(tx, id);
-    await audit({ userId, action: "reservation.checkout", entity: "Reservation", entityId: id, summary: `Checked out ${r.code}${r.room ? ` from room ${r.room.number}` : ""}, invoice ${inv.number}` }, tx);
-    return inv;
+    const where = r.room ? ` from room ${r.room.number}` : "";
+    if (groupBill && othersStaying > 0) {
+      await audit({ userId, action: "reservation.checkout", entity: "Reservation", entityId: id, summary: `Checked out ${r.code}${where}; charges stay on group bill ${groupBill.code}` }, tx);
+      return { invoice: null, groupInvoice: false, groupId: groupBill.id };
+    }
+    const inv = groupBill ? await issueGroupInvoice(tx, groupBill.id) : await issueInvoice(tx, id);
+    await audit({ userId, action: "reservation.checkout", entity: "Reservation", entityId: id, summary: `Checked out ${r.code}${where}, ${groupBill ? "group " : ""}invoice ${inv.number}` }, tx);
+    return { invoice: inv, groupInvoice: !!groupBill, groupId: groupBill?.id ?? null };
   });
-  return invoice;
 }
 
 function hoursUntilArrival(checkIn: Date, checkInTime: string) {
@@ -586,7 +798,7 @@ export async function recordPayment(
   input: { amount: number; method: PaymentMethod; note?: string | null; card?: CardDetails },
   userId: string | null,
 ) {
-  const r = await db.reservation.findUniqueOrThrow({ where: { id: reservationId }, include: { charges: true, payments: true } });
+  const r = await db.reservation.findUniqueOrThrow({ where: { id: reservationId }, include: { charges: true, payments: true, group: { include: { invoice: true } } } });
   const amount = round2(input.amount);
   if (amount <= 0) throw new BookingError("Enter an amount greater than zero.");
   let provider = "manual";
@@ -605,6 +817,99 @@ export async function recordPayment(
   await db.payment.create({
     data: { reservationId, amount, method: input.method, provider, providerRef: reference, cardBrand: brand, cardLast4: last4, note: input.note || null, processedById: userId },
   });
-  if (r.status === "CHECKED_OUT") await db.$transaction((tx) => issueInvoice(tx, reservationId));
+  await refreshInvoices(r);
   await audit({ userId, action: "payment.record", entity: "Reservation", entityId: reservationId, summary: `Recorded ${input.method.toLowerCase().replace("_", " ")} payment of ${formatMoney(amount)} on ${r.code}` });
+}
+
+/** Keeps an already-issued invoice in step with later payments (e.g. a balance settled after departure). */
+async function refreshInvoices(r: { id: string; status: string; group: { id: string; singleBill: boolean; invoice: { id: string } | null } | null }) {
+  if (r.group?.singleBill) {
+    if (r.group.invoice) await db.$transaction((tx) => issueGroupInvoice(tx, r.group!.id));
+  } else if (r.status === "CHECKED_OUT") {
+    await db.$transaction((tx) => issueInvoice(tx, r.id));
+  }
+}
+
+// ─── Groups ────────────────────────────────────────────────────────────────
+
+export const groupInclude = {
+  booker: true,
+  company: true,
+  invoice: true,
+  reservations: { include: reservationInclude, orderBy: [{ room: { number: "asc" } }, { createdAt: "asc" }] },
+} satisfies Prisma.ReservationGroupInclude;
+
+export async function getGroup(where: { id: string } | { code: string }) {
+  return db.reservationGroup.findUnique({ where, include: groupInclude });
+}
+
+export type FullGroup = NonNullable<Awaited<ReturnType<typeof getGroup>>>;
+
+export function summarizeGroup(g: FullGroup) {
+  return summarizeFolio({ charges: g.reservations.flatMap((r) => r.charges), payments: g.reservations.flatMap((r) => r.payments) });
+}
+
+/** Takes one payment for a group and splits it across the rooms with an open balance. */
+export async function recordGroupPayment(
+  groupId: string,
+  input: { amount: number; method: PaymentMethod; note?: string | null; card?: CardDetails },
+  userId: string | null,
+) {
+  const g = await db.reservationGroup.findUniqueOrThrow({ where: { id: groupId }, include: { invoice: true, reservations: { include: { charges: true, payments: true } } } });
+  const amount = round2(input.amount);
+  if (amount <= 0) throw new BookingError("Enter an amount greater than zero.");
+  const rooms = g.reservations.filter((r) => r.status !== "CANCELLED" || summarizeFolio(r).balance > 0.004);
+  if (rooms.length === 0) throw new BookingError("This group has no rooms to pay for.");
+  let provider = "manual";
+  let reference: string | null = null;
+  let brand: string | null = null;
+  let last4: string | null = null;
+  if (input.card) {
+    const gateway = getPaymentProvider();
+    const result = await gateway.charge({ amount, card: input.card, description: `Group ${g.code}` });
+    if (!result.ok) throw new BookingError(result.error);
+    ({ reference, brand, last4 } = result);
+    provider = gateway.name;
+  }
+  const parts = allocatePayment(rooms.map((r) => ({ id: r.id, balance: summarizeFolio(r).balance })), amount);
+  await db.$transaction(async (tx) => {
+    for (const part of parts) {
+      await tx.payment.create({
+        data: { reservationId: part.id, amount: part.amount, method: input.method, provider, providerRef: reference, cardBrand: brand, cardLast4: last4, note: input.note || `Group ${g.code}`, processedById: userId },
+      });
+    }
+    for (const r of g.reservations.filter((r) => r.status === "CHECKED_OUT" && !g.singleBill)) await issueInvoice(tx, r.id);
+    if (g.invoice) await issueGroupInvoice(tx, groupId);
+    await audit({ userId, action: "payment.record", entity: "ReservationGroup", entityId: groupId, summary: `Recorded ${input.method.toLowerCase().replace("_", " ")} payment of ${formatMoney(amount)} on group ${g.code}` }, tx);
+  });
+}
+
+/** Checks in every room of a group that is due today. Returns per-room outcomes. */
+export async function checkInGroup(groupId: string, userId: string) {
+  const rooms = await db.reservation.findMany({ where: { groupId, status: { in: ["CONFIRMED", "PENDING"] } }, include: { room: true } });
+  const results: { code: string; ok: boolean; message: string }[] = [];
+  for (const r of rooms) {
+    try {
+      const room = await checkIn(r.id, userId);
+      results.push({ code: r.code, ok: true, message: `Room ${room.number}` });
+    } catch (e) {
+      if (!(e instanceof BookingError)) throw e;
+      results.push({ code: r.code, ok: false, message: e.message });
+    }
+  }
+  return results;
+}
+
+/** Cancels every upcoming room of a group. */
+export async function cancelGroup(groupId: string, opts: { userId: string | null; reason: string; waiveFee?: boolean }) {
+  const rooms = await db.reservation.findMany({ where: { groupId, status: { in: ["CONFIRMED", "PENDING"] } } });
+  if (rooms.length === 0) throw new BookingError("There are no upcoming rooms to cancel in this booking.");
+  let refunded = 0;
+  let fees = 0;
+  for (const r of rooms) {
+    const result = await cancelReservation(r.id, opts);
+    refunded = round2(refunded + result.refunded);
+    if (result.feeCharged) fees++;
+  }
+  return { refunded, fees, cancelled: rooms.length };
 }

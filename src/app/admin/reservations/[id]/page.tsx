@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { BedDouble, Crown, Download, LogIn, LogOut, Mail, Phone, UserX } from "lucide-react";
+import { BedDouble, Building2, Crown, Download, LogIn, LogOut, Mail, Phone, UserX, Users } from "lucide-react";
 import { ActionButton } from "@/components/action-ui";
 import { PageHeader } from "@/components/page-header";
 import { PAYMENT_METHOD_LABEL, ReservationStatusBadge, RoomStatusBadge, SOURCE_LABEL } from "@/components/status";
@@ -14,9 +14,10 @@ import { db } from "@/lib/db";
 import { formatDate, formatDateTime, formatLongDate, nightsBetween, toISODate, today } from "@/lib/dates";
 import { summarizeFolio } from "@/lib/folio";
 import { formatMoney, pluralize, toNumber } from "@/lib/format";
-import { getReservation } from "@/lib/reservations";
+import { getReservation, groupFolio } from "@/lib/reservations";
 import { cn } from "@/lib/utils";
 import { checkInAction, checkOutAction, noShowAction } from "../actions";
+import { BillToDialog } from "../../companies/company-form";
 import { AddChargeDialog, AssignRoomDialog, CancelDialog, DetailsForm, EmailMenu, ModifyStayDialog, PaymentDialog, RefundDialog, VoidChargeButton } from "./panels";
 
 export const metadata: Metadata = { title: "Reservation" };
@@ -29,13 +30,17 @@ export default async function ReservationPage({ params }: { params: Promise<{ id
 
   const t = today();
   const active = ["PENDING", "CONFIRMED", "CHECKED_IN"].includes(r.status);
-  const [freeRooms, roomTypes, services, history, emails] = await Promise.all([
+  const [freeRooms, roomTypes, services, history, emails, companies, siblings] = await Promise.all([
     active ? findFreeRooms(db, { roomTypeId: r.roomTypeId, checkIn: r.checkIn, checkOut: r.checkOut, excludeReservationId: r.id }) : [],
     db.roomType.findMany({ where: { active: true }, orderBy: { sortOrder: "asc" }, select: { id: true, name: true, maxAdults: true, maxChildren: true } }),
     db.service.findMany({ where: { active: true }, orderBy: [{ category: "asc" }, { name: "asc" }] }),
     db.auditLog.findMany({ where: { entity: "Reservation", entityId: r.id }, include: { user: { select: { name: true } } }, orderBy: { createdAt: "desc" }, take: 20 }),
     db.emailLog.findMany({ where: { reservationId: r.id }, orderBy: { createdAt: "desc" }, take: 10 }),
+    db.company.findMany({ orderBy: { name: "asc" }, select: { id: true, name: true, taxId: true } }),
+    r.groupId ? db.reservation.findMany({ where: { groupId: r.groupId }, select: { id: true, status: true, room: { select: { number: true } } }, orderBy: { createdAt: "asc" } }) : [],
   ]);
+  const groupBill = r.group?.singleBill ? await groupFolio(db, r.group.id) : null;
+  const othersStaying = siblings.filter((x) => x.id !== r.id && ["PENDING", "CONFIRMED", "CHECKED_IN"].includes(x.status)).length;
 
   const folio = summarizeFolio(r);
   const nights = nightsBetween(r.checkIn, r.checkOut);
@@ -77,7 +82,15 @@ export default async function ReservationPage({ params }: { params: Promise<{ id
               </ActionButton>
             )}
             {canCheckOut && (
-              <ActionButton action={checkOutAction.bind(null, r.id)} variant="gold" confirm={`Check out ${r.guest.firstName} ${r.guest.lastName}${t < r.checkOut ? " early" : ""}?`}>
+              <ActionButton
+                action={checkOutAction.bind(null, r.id)}
+                variant="gold"
+                confirm={
+                  groupBill && othersStaying > 0
+                    ? `Check out room ${r.room?.number ?? ""}${t < r.checkOut ? " early" : ""}? Its charges stay on group bill ${r.group?.code}.`
+                    : `Check out ${r.guest.firstName} ${r.guest.lastName}${t < r.checkOut ? " early" : ""}?`
+                }
+              >
                 <LogOut /> Check out
               </ActionButton>
             )}
@@ -100,13 +113,25 @@ export default async function ReservationPage({ params }: { params: Promise<{ id
         }
       />
 
+      {r.group && (
+        <div className="mb-6 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-gold/30 bg-gold-soft/50 px-4 py-3 text-sm">
+          <span className="flex items-center gap-2 text-[#6d5326]">
+            <Users className="size-4" />
+            Part of group <span className="font-medium">{r.group.name}</span> ({r.group.code}) · {siblings.length} rooms:{" "}
+            {siblings.map((x) => x.room?.number ?? "—").join(", ")}
+            {groupBill && <> · one bill, group balance <span className="font-medium">{formatMoney(groupBill.balance)}</span></>}
+          </span>
+          <ButtonLink href={`/admin/groups/${r.group.id}`} size="sm" variant="outline">Open group</ButtonLink>
+        </div>
+      )}
+
       {roomDirty && canCheckIn && (
         <div className="mb-6 rounded-xl border border-warning/20 bg-warning-soft px-4 py-3 text-sm text-warning">
           Room {r.room?.number} is still marked as dirty. Ask housekeeping to prioritise it, or move the guest to a clean room.
         </div>
       )}
 
-      <div className="grid gap-6 xl:grid-cols-[1fr_360px]">
+      <div className="grid gap-6 [&>*]:min-w-0 xl:grid-cols-[1fr_360px]">
         <div className="space-y-6">
           <Card>
             <CardHeader title="Stay" />
@@ -299,6 +324,27 @@ export default async function ReservationPage({ params }: { params: Promise<{ id
               <Link href={`/admin/reservations?q=${encodeURIComponent(r.guest.email ?? r.guest.lastName)}`} className="inline-block text-xs text-primary underline-offset-4 hover:underline">
                 See all stays
               </Link>
+            </CardBody>
+          </Card>
+
+          <Card>
+            <CardHeader
+              title="Invoice to"
+              action={!r.group && !r.invoice && can(user.role, "billing") ? <BillToDialog reservationId={r.id} current={r.companyId} companies={companies} /> : null}
+            />
+            <CardBody className="text-sm">
+              {r.company ? (
+                <Link href={`/admin/companies/${r.company.id}`} className="group flex items-start gap-3">
+                  <Building2 className="mt-0.5 size-4 text-gold" />
+                  <span>
+                    <span className="font-medium group-hover:text-primary">{r.company.name}</span>
+                    {r.company.taxId && <span className="block text-muted-foreground">NIPT {r.company.taxId}</span>}
+                  </span>
+                </Link>
+              ) : (
+                <p className="text-muted-foreground">The guest (private){r.group ? " — set on the group" : ""}.</p>
+              )}
+              {r.occupantName && <p className="mt-2 text-muted-foreground">Room guest: <span className="font-medium text-foreground">{r.occupantName}</span></p>}
             </CardBody>
           </Card>
 

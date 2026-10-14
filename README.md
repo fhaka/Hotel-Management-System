@@ -45,6 +45,8 @@ offers one-click sign-in for each role.
 **Guest website**
 - Landing page, rooms & suites, room details, dining & spa, contact form (with map)
 - Live availability search and pricing (weekday/weekend rates, seasons, city tax, VAT-inclusive)
+- **Multi-room bookings**: pick several rooms (and room types) in one booking, set guests and a name per room
+- **Company invoices**: guests can request an invoice to their company (name, NIPT / VAT ID, address)
 - Checkout with add-ons (breakfast, transfers, spa…), pay now by card or pay at the hotel
 - Instant confirmation page + confirmation email
 - Manage booking with confirmation number + email: view bill, download PDF invoice, cancel (policy-aware refunds)
@@ -58,7 +60,12 @@ offers one-click sign-in for each role.
 - **Reservations** — search & filters, CSV export, new booking with live availability/price, detail page with
   modify stay (auto re-pricing), room moves, folio (post/void charges & discounts), payments, refunds,
   PDF invoice, emails, activity history
+- **Group bookings** — several rooms under one booker and one confirmation code (`HG…`), one combined bill by default
+  (rooms can depart with open charges; the group is settled and invoiced when the last room leaves), group payment split
+  across rooms, check in all rooms at once, add rooms later, cancel the whole group
 - **Guests** — CRM with VIP flag, preferences, ID details, stay history, lifetime value
+- **Companies** — corporate accounts with tax number, contact and billing details; stays, revenue and open balances;
+  bill any reservation or group to a company
 - **Rooms & rates** — live room grid by floor, status & out-of-order, room types & rates editor, seasonal pricing
 - **Housekeeping** — task board (to do / in progress / done), auto-tasks on check-out and out-of-order,
   stayover generation, assignment; completing a task updates the room status
@@ -79,6 +86,9 @@ offers one-click sign-in for each role.
   Prepayments are refunded automatically to the original card.
 - Check-in requires the arrival date, an available room that is not out of order, and (unless overridden) clean;
   it is blocked while a departing guest is still in the room.
+- Group bookings: per-guest extras apply to every room, other extras once; a payment is split across rooms with an
+  open balance. With one bill, only the last departure needs a settled group balance and it issues one group invoice.
+- Invoices are addressed to the company (with its NIPT / VAT ID) when the stay or group is billed to one.
 - Check-out requires a settled folio. Early departures are re-priced to the nights used. Check-out issues the invoice,
   emails it as a PDF, marks the room dirty and creates a cleaning task.
 - All settings above are editable in **Settings**.

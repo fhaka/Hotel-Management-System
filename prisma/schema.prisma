@@ -153,31 +153,51 @@ model Guest {
   updatedAt   DateTime  @updatedAt
 
   reservations Reservation[]
+  groupsBooked ReservationGroup[] @relation("GroupBooker")
 
   @@index([lastName, firstName])
+}
+
+// A business guests can be invoiced to (corporate accounts).
+model Company {
+  id          String   @id @default(cuid())
+  name        String
+  taxId       String?  @unique
+  email       String?
+  phone       String?
+  address     String?
+  city        String?
+  country     String?
+  contactName String?
+  notes       String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  reservations Reservation[]
+  groups       ReservationGroup[]
 }
 
 // ─── Inventory ──────────────────────────────────────────────────────────────
 
 model RoomType {
-  id               String   @id @default(cuid())
-  slug             String   @unique
-  name             String
-  tagline          String
-  description      String
-  baseRate         Decimal  @db.Decimal(10, 2)
-  weekendRate      Decimal? @db.Decimal(10, 2)
-  maxAdults        Int
-  maxChildren      Int
-  sizeSqm          Int
-  bedType          String
-  view             String
-  amenities        String[]
-  images           String[]
-  sortOrder        Int      @default(0)
-  active           Boolean  @default(true)
-  createdAt        DateTime @default(now())
-  updatedAt        DateTime @updatedAt
+  id          String   @id @default(cuid())
+  slug        String   @unique
+  name        String
+  tagline     String
+  description String
+  baseRate    Decimal  @db.Decimal(10, 2)
+  weekendRate Decimal? @db.Decimal(10, 2)
+  maxAdults   Int
+  maxChildren Int
+  sizeSqm     Int
+  bedType     String
+  view        String
+  amenities   String[]
+  images      String[]
+  sortOrder   Int      @default(0)
+  active      Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
 
   rooms         Room[]
   reservations  Reservation[]
@@ -238,6 +258,11 @@ model Reservation {
   estimatedArrival   String?
   createdById        String?
   createdBy          User?             @relation("ReservationCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  groupId            String?
+  group              ReservationGroup? @relation(fields: [groupId], references: [id], onDelete: SetNull)
+  companyId          String?
+  company            Company?          @relation(fields: [companyId], references: [id], onDelete: SetNull)
+  occupantName       String?
   checkedInAt        DateTime?
   checkedOutAt       DateTime?
   cancelledAt        DateTime?
@@ -245,16 +270,38 @@ model Reservation {
   createdAt          DateTime          @default(now())
   updatedAt          DateTime          @updatedAt
 
-  charges   FolioCharge[]
-  payments  Payment[]
-  invoice   Invoice?
-  emails    EmailLog[]
-  review    Review?
+  charges  FolioCharge[]
+  payments Payment[]
+  invoice  Invoice?
+  emails   EmailLog[]
+  review   Review?
 
   @@index([checkIn, checkOut])
   @@index([status])
   @@index([guestId])
   @@index([roomId])
+  @@index([groupId])
+}
+
+// Several rooms booked together under one booker and, by default, one bill.
+model ReservationGroup {
+  id          String   @id @default(cuid())
+  code        String   @unique
+  name        String
+  bookerId    String
+  booker      Guest    @relation("GroupBooker", fields: [bookerId], references: [id])
+  companyId   String?
+  company     Company? @relation(fields: [companyId], references: [id], onDelete: SetNull)
+  // When true the group is settled and invoiced as one bill when the last room departs.
+  singleBill  Boolean  @default(true)
+  notes       String?
+  createdById String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  reservations Reservation[]
+  invoice      Invoice?
+  emails       EmailLog[]
 }
 
 model FolioCharge {
@@ -301,16 +348,20 @@ model Payment {
 }
 
 model Invoice {
-  id            String        @id @default(cuid())
-  number        String        @unique
-  reservationId String        @unique
-  reservation   Reservation   @relation(fields: [reservationId], references: [id], onDelete: Cascade)
-  status        InvoiceStatus @default(ISSUED)
-  netTotal      Decimal       @db.Decimal(10, 2)
-  vatTotal      Decimal       @db.Decimal(10, 2)
-  total         Decimal       @db.Decimal(10, 2)
+  id            String            @id @default(cuid())
+  number        String            @unique
+  reservationId String?           @unique
+  reservation   Reservation?      @relation(fields: [reservationId], references: [id], onDelete: Cascade)
+  groupId       String?           @unique
+  group         ReservationGroup? @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  status        InvoiceStatus     @default(ISSUED)
+  netTotal      Decimal           @db.Decimal(10, 2)
+  vatTotal      Decimal           @db.Decimal(10, 2)
+  total         Decimal           @db.Decimal(10, 2)
   billTo        String
-  issuedAt      DateTime      @default(now())
+  billToTaxId   String?
+  billToAddress String?
+  issuedAt      DateTime          @default(now())
 }
 
 // ─── Services & operations ──────────────────────────────────────────────────
@@ -376,15 +427,17 @@ model ContactMessage {
 }
 
 model EmailLog {
-  id            String       @id @default(cuid())
+  id            String            @id @default(cuid())
   to            String
   subject       String
   template      String
   status        EmailStatus
   error         String?
   reservationId String?
-  reservation   Reservation? @relation(fields: [reservationId], references: [id], onDelete: SetNull)
-  createdAt     DateTime     @default(now())
+  reservation   Reservation?      @relation(fields: [reservationId], references: [id], onDelete: SetNull)
+  groupId       String?
+  group         ReservationGroup? @relation(fields: [groupId], references: [id], onDelete: SetNull)
+  createdAt     DateTime          @default(now())
 }
 
 model AuditLog {
