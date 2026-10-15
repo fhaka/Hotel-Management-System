@@ -8,9 +8,27 @@ import { getCurrentUser } from "@/lib/auth/dal";
 import { db } from "@/lib/db";
 import { isISODate, parseISODate } from "@/lib/dates";
 import { sendGroupEmail, sendReservationEmail } from "@/lib/notifications";
-import { BookingError, MAX_ROOMS_PER_BOOKING, bookOnline } from "@/lib/reservations";
+import { BookingError, MAX_ROOMS_PER_BOOKING, bookOnline, resolvePromo } from "@/lib/reservations";
+import { promoLabel } from "@/lib/booking-rules";
 
 export type BookState = { error?: string; fieldErrors?: Record<string, string[] | undefined> } | null;
+
+export type PromoCheck =
+  | { ok: true; code: string; label: string; type: "PERCENT" | "FIXED_PER_NIGHT"; value: number; roomTypeIds: string[] }
+  | { ok: false; error: string };
+
+/** Validates a promo code for the guest's stay so the checkout can preview the discount. */
+export async function checkPromo(input: { code: string; checkIn: string; checkOut: string; roomTypeIds: string[] }): Promise<PromoCheck> {
+  if (!input.code.trim()) return { ok: false, error: "Enter a promo code." };
+  if (!isISODate(input.checkIn) || !isISODate(input.checkOut)) return { ok: false, error: "Invalid dates." };
+  try {
+    const promo = await resolvePromo(input.code, { checkIn: parseISODate(input.checkIn), checkOut: parseISODate(input.checkOut), roomTypeIds: input.roomTypeIds });
+    return { ok: true, code: promo.code, label: promoLabel(promo), type: promo.type, value: promo.value, roomTypeIds: promo.roomTypeIds };
+  } catch (e) {
+    if (e instanceof BookingError) return { ok: false, error: e.message };
+    throw e;
+  }
+}
 
 const roomsSchema = z
   .array(
@@ -44,6 +62,7 @@ const schema = z
     estimatedArrival: z.string().max(20).optional(),
     specialRequests: z.string().trim().max(500).optional(),
     extras: z.array(z.string()).default([]),
+    promoCode: z.string().trim().max(40).optional(),
     company: z.literal("on").optional(),
     companyName: z.string().trim().max(120).optional(),
     companyTaxId: z.string().trim().max(30).optional(),
@@ -90,6 +109,7 @@ export async function bookAction(_: BookState, formData: FormData): Promise<Book
       checkOut: parseISODate(d.checkOut),
       rooms: rooms.map((r) => ({ roomTypeId: r.roomTypeId!, adults: r.adults, children: r.children, occupantName: r.occupantName })),
       extraServiceIds: d.extras,
+      promoCode: d.promoCode || null,
       specialRequests: d.specialRequests,
       estimatedArrival: d.estimatedArrival,
       company: d.company

@@ -1,16 +1,18 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useMemo, useState, useTransition } from "react";
 import Image from "next/image";
 import Link from "next/link";
-import { Building2, ChevronLeft, CreditCard, Hotel, Info, Lock, ShieldCheck } from "lucide-react";
+import { Building2, ChevronLeft, CreditCard, Hotel, Info, Loader2, Lock, ShieldCheck, Tag, X } from "lucide-react";
 import { Checkbox, Field, FormMessage, Input, Select, SubmitButton, Textarea, useActionForm } from "@/components/ui/form";
 import { COUNTRIES } from "@/lib/countries";
 import { formatLongDate, parseISODate } from "@/lib/dates";
 import { formatMoney, pluralize, round2 } from "@/lib/format";
-import { quoteStay } from "@/lib/pricing";
+import { quoteStay, vatPortion } from "@/lib/pricing";
+import { promoAppliesTo, promoDiscount } from "@/lib/booking-rules";
+import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import { bookAction } from "./actions";
+import { bookAction, checkPromo, type PromoCheck } from "./actions";
 
 type RoomLine = {
   roomTypeId: string;
@@ -44,6 +46,21 @@ export function CheckoutForm({ search, backHref, rooms: initialRooms, seasons, s
   const [payment, setPayment] = useState<"card" | "hotel">("card");
   const [company, setCompany] = useState(false);
   const [card, setCard] = useState({ number: "", expiry: "", cvc: "", name: "" });
+  const [promo, setPromo] = useState<Extract<PromoCheck, { ok: true }> | null>(null);
+  const [promoInput, setPromoInput] = useState("");
+  const [promoError, setPromoError] = useState<string | null>(null);
+  const [checkingPromo, startPromo] = useTransition();
+  const applyPromo = () =>
+    startPromo(async () => {
+      const result = await checkPromo({ code: promoInput, checkIn: search.checkIn, checkOut: search.checkOut, roomTypeIds: [...new Set(rooms.map((r) => r.roomTypeId))] });
+      if (result.ok) {
+        setPromo(result);
+        setPromoError(null);
+      } else {
+        setPromo(null);
+        setPromoError(result.error);
+      }
+    });
   const e = state?.fieldErrors;
   const multi = rooms.length > 1;
 
@@ -64,10 +81,12 @@ export function CheckoutForm({ search, backHref, rooms: initialRooms, seasons, s
       }),
     );
   }, [rooms, seasons, services, extras, search, settings]);
-  const total = round2(quotes.reduce((s, q) => s + q.total, 0));
+  const discounts = quotes.map((q, i) => (promo && promoAppliesTo(promo, rooms[i]!.roomTypeId) ? promoDiscount(promo, q.roomTotal, q.nightCount) : 0));
+  const discountTotal = round2(discounts.reduce((s, x) => s + x, 0));
+  const total = round2(quotes.reduce((s, q) => s + q.total, 0) - discountTotal);
   const roomTotal = round2(quotes.reduce((s, q) => s + q.roomTotal, 0));
   const cityTax = round2(quotes.reduce((s, q) => s + q.cityTax, 0));
-  const vat = round2(quotes.reduce((s, q) => s + q.vatIncluded, 0));
+  const vat = round2(quotes.reduce((s, q) => s + q.vatIncluded, 0) - vatPortion(discountTotal, settings.vatRate));
   const nights = quotes[0]?.nightCount ?? 0;
   const extraLines = services
     .filter((s) => extras.includes(s.id))
@@ -94,6 +113,7 @@ export function CheckoutForm({ search, backHref, rooms: initialRooms, seasons, s
         <input key={id} type="hidden" name="extras" value={id} />
       ))}
       <input type="hidden" name="payment" value={payment} />
+      <input type="hidden" name="promoCode" value={promo?.code ?? ""} />
 
       <div className="space-y-6">
         <Link href={backHref} className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-primary">
@@ -354,7 +374,44 @@ export function CheckoutForm({ search, backHref, rooms: initialRooms, seasons, s
               {pluralize(nights, "night")} · {pluralize(rooms.reduce((s, r) => s + r.adults, 0), "adult")}
               {rooms.some((r) => r.children) ? `, ${pluralize(rooms.reduce((s, r) => s + r.children, 0), "child", "children")}` : ""}
             </p>
-            <dl className="mt-5 space-y-2 border-t border-border pt-4 text-sm">
+            <div className="mt-5 border-t border-border pt-4">
+              {promo ? (
+                <div className="flex items-center justify-between gap-2 rounded-lg border border-success/30 bg-success-soft px-3 py-2 text-sm text-success">
+                  <span className="flex items-center gap-2">
+                    <Tag className="size-4" /> <span className="font-mono font-medium">{promo.code}</span> applied
+                  </span>
+                  <button type="button" onClick={() => setPromo(null)} className="cursor-pointer rounded p-0.5 hover:bg-white/60" aria-label="Remove promo code">
+                    <X className="size-4" />
+                  </button>
+                </div>
+              ) : (
+                <div>
+                  <label htmlFor="promoInput" className="text-xs font-medium uppercase tracking-wider text-muted-foreground">Promo code</label>
+                  <div className="mt-1.5 flex gap-2">
+                    <Input
+                      id="promoInput"
+                      value={promoInput}
+                      onChange={(e) => setPromoInput(e.target.value.toUpperCase())}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") {
+                          e.preventDefault();
+                          applyPromo();
+                        }
+                      }}
+                      placeholder="E.g. WELCOME10"
+                      className="h-9 font-mono uppercase"
+                      maxLength={40}
+                    />
+                    <Button variant="outline" size="sm" className="h-9" onClick={applyPromo} disabled={checkingPromo || !promoInput.trim()}>
+                      {checkingPromo ? <Loader2 className="animate-spin" /> : "Apply"}
+                    </Button>
+                  </div>
+                  {promoError && <p className="mt-1.5 text-xs text-danger">{promoError}</p>}
+                </div>
+              )}
+              {promo && discountTotal === 0 && <p className="mt-1.5 text-xs text-warning">This code doesn&apos;t apply to the selected rooms.</p>}
+            </div>
+            <dl className="mt-4 space-y-2 text-sm">
               <div className="flex justify-between">
                 <dt className="text-muted-foreground">{multi ? `Rooms (${rooms.length} × ${pluralize(nights, "night")})` : `Room (${pluralize(nights, "night")})`}</dt>
                 <dd>{formatMoney(roomTotal)}</dd>
@@ -368,6 +425,14 @@ export function CheckoutForm({ search, backHref, rooms: initialRooms, seasons, s
                   <dd>{formatMoney(x.amount)}</dd>
                 </div>
               ))}
+              {discountTotal > 0 && promo && (
+                <div className="flex justify-between text-success">
+                  <dt>
+                    Promo {promo.code} <span className="text-xs">({promo.label})</span>
+                  </dt>
+                  <dd>−{formatMoney(discountTotal)}</dd>
+                </div>
+              )}
               <div className="flex justify-between">
                 <dt className="text-muted-foreground">City tax</dt>
                 <dd>{formatMoney(cityTax)}</dd>

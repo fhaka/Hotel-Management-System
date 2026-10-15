@@ -45,6 +45,8 @@ export function NewReservationForm({
   const [lines, setLines] = useState<Line[]>([{ key: 0, roomTypeId: defaults.roomTypeId, adults: 2, children: 0, roomId: "", occupantName: "" }]);
   const [extras, setExtras] = useState<string[]>([]);
   const [companyId, setCompanyId] = useState(initialCompanyId);
+  const [promoCode, setPromoCode] = useState("");
+  const [appliedPromo, setAppliedPromo] = useState("");
   const [avail, setAvail] = useState<Avail>(null);
   const [checking, startCheck] = useTransition();
   const multi = lines.length > 1;
@@ -53,13 +55,13 @@ export function NewReservationForm({
   const lineKey = JSON.stringify(lines.map((l) => [l.roomTypeId, l.adults, l.children]));
   useEffect(() => {
     startCheck(async () => {
-      const result = await checkAvailability({ ...dates, lines: lines.map((l) => ({ roomTypeId: l.roomTypeId, adults: l.adults, children: l.children })), extras });
+      const result = await checkAvailability({ ...dates, lines: lines.map((l) => ({ roomTypeId: l.roomTypeId, adults: l.adults, children: l.children })), extras, promoCode: appliedPromo });
       setAvail(result);
       // Drop manual room picks that are no longer free.
       setLines((ls) => ls.map((l) => (l.roomId && !result?.free[l.roomTypeId]?.some((r) => r.id === l.roomId) ? { ...l, roomId: "" } : l)));
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps -- re-check only when dates, room types, occupancy or extras change
-  }, [dates, lineKey, extras]);
+  }, [dates, lineKey, extras, appliedPromo]);
 
   const setLine = (key: number, patch: Partial<Line>) => setLines((ls) => ls.map((l) => (l.key === key ? { ...l, ...patch } : l)));
   const addLine = () => setLines((ls) => [...ls, { key: nextKey++, roomTypeId: ls.at(-1)?.roomTypeId ?? defaults.roomTypeId, adults: 2, children: 0, roomId: "", occupantName: "" }]);
@@ -70,6 +72,7 @@ export function NewReservationForm({
     <form {...formProps} className="grid gap-6 [&>*]:min-w-0 xl:grid-cols-[1fr_340px]">
       <input type="hidden" name="rooms" value={JSON.stringify(lines.map(({ roomTypeId, adults, children, roomId, occupantName }) => ({ roomTypeId, adults, children, roomId, occupantName })))} />
       {group && <input type="hidden" name="groupId" value={group.id} />}
+      <input type="hidden" name="promoCode" value={avail?.promo ? avail.promo.code : ""} />
       <div className="space-y-6">
         <FormMessage state={state} />
         {group ? (
@@ -146,6 +149,14 @@ export function NewReservationForm({
               {addingToGroup && <input type="hidden" name="source" value="PHONE" />}
             </div>
 
+            {avail && avail.warnings.length > 0 && (
+              <div className="rounded-lg border border-warning/30 bg-warning-soft px-3 py-2 text-sm text-warning">
+                <p className="font-medium">Booking rules for these dates (online bookings would be blocked):</p>
+                <ul className="mt-1 list-disc pl-5">
+                  {avail.warnings.map((w) => <li key={w}>{w}</li>)}
+                </ul>
+              </div>
+            )}
             <div className="space-y-3">
               {lines.map((line, i) => {
                 const type = roomTypes.find((t) => t.id === line.roomTypeId);
@@ -260,6 +271,14 @@ export function NewReservationForm({
                 </label>
               ))}
             </div>
+            <Field label="Promo code" htmlFor="promoInput" error={avail?.promoError ?? undefined} hint={avail?.promo ? `${avail.promo.code}: ${avail.promo.label}` : "Optional — discounts the room rate."}>
+              <div className="flex gap-2">
+                <Input id="promoInput" value={promoCode} onChange={(e) => setPromoCode(e.target.value.toUpperCase())} className="max-w-56 font-mono uppercase" placeholder="E.g. WELCOME10" />
+                <Button variant="outline" onClick={() => setAppliedPromo(promoCode.trim())} disabled={promoCode.trim() === appliedPromo}>
+                  {appliedPromo && promoCode.trim() === "" ? "Remove" : "Apply"}
+                </Button>
+              </div>
+            </Field>
             <Field label="Guest requests" htmlFor="specialRequests"><Textarea id="specialRequests" name="specialRequests" rows={2} /></Field>
             <Field label="Internal notes" htmlFor="internalNotes"><Textarea id="internalNotes" name="internalNotes" rows={2} /></Field>
           </CardBody>
@@ -274,6 +293,7 @@ export function NewReservationForm({
               <dl className="space-y-2 text-sm">
                 <div className="flex justify-between"><dt className="text-muted-foreground">{multi ? `${lines.length} rooms` : "Room"} ({avail.nights} nights)</dt><dd>{formatMoney(avail.roomTotal)}</dd></div>
                 {avail.extrasTotal > 0 && <div className="flex justify-between"><dt className="text-muted-foreground">Extras</dt><dd>{formatMoney(avail.extrasTotal)}</dd></div>}
+                {avail.discount > 0 && avail.promo && <div className="flex justify-between text-success"><dt>Promo {avail.promo.code}</dt><dd>−{formatMoney(avail.discount)}</dd></div>}
                 <div className="flex justify-between"><dt className="text-muted-foreground">City tax</dt><dd>{formatMoney(avail.cityTax)}</dd></div>
                 <div className="flex justify-between border-t border-border pt-2 text-base font-semibold"><dt>Total</dt><dd>{formatMoney(avail.total)}</dd></div>
               </dl>

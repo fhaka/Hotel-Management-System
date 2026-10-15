@@ -68,6 +68,8 @@ async function reset() {
     db.company.deleteMany(),
     db.housekeepingTask.deleteMany(),
     db.seasonalRate.deleteMany(),
+    db.stayRestriction.deleteMany(),
+    db.promoCode.deleteMany(),
     db.room.deleteMany(),
     db.roomType.deleteMany(),
     db.service.deleteMany(),
@@ -196,7 +198,7 @@ async function main() {
     },
   ];
 
-  const roomTypes = [];
+  const roomTypes: (Awaited<ReturnType<typeof db.roomType.create>> & { count: number })[] = [];
   for (const { count, ...t } of typeSeed) roomTypes.push({ ...(await db.roomType.create({ data: t })), count });
 
   // 12 rooms per floor across 5 floors: Classic on 1–2, Deluxe on 3 and part of 4, Junior Suites on 4–5, Imperial on 5.
@@ -572,6 +574,31 @@ async function main() {
     }
     groupNo++;
   }
+
+  // ─── Promotions & booking rules ────────────────────────────────────────────
+  console.log("Creating promotions and booking rules…");
+  const typeId = (slug: string) => roomTypes.find((t) => t.slug === slug)!.id;
+  await db.promoCode.createMany({
+    data: [
+      { code: "WELCOME10", description: "Website welcome offer for first-time guests", type: "PERCENT", value: 10, usedCount: 24 },
+      { code: "SUITEDEAL", description: "Suite upgrade campaign", type: "FIXED_PER_NIGHT", value: 40, minNights: 2, maxUses: 50, usedCount: 7, roomTypeIds: [typeId("junior-suite"), typeId("imperial-suite")] },
+      { code: `SUMMER${year + 1}`, description: "Early summer booking campaign", type: "PERCENT", value: 15, minNights: 3, validTo: parseISODate(`${year + 1}-05-31`), stayFrom: parseISODate(`${year + 1}-06-01`), stayTo: parseISODate(`${year + 1}-08-31`), usedCount: 3 },
+      { code: "CORPORATE12", description: "Negotiated rate for partner companies", type: "PERCENT", value: 12, roomTypeIds: [typeId("standard"), typeId("deluxe")], usedCount: 41 },
+      { code: "EARLYBIRD", description: "Autumn early-bird offer (ended)", type: "PERCENT", value: 20, validTo: parseISODate(`${year}-09-30`), usedCount: 38 },
+    ],
+  });
+  // A busy weekend about two weeks out, so the demo shows a minimum stay in action.
+  let eventFriday = addDays(today, 10);
+  while (eventFriday.getUTCDay() !== 5) eventFriday = addDays(eventFriday, 1);
+  await db.stayRestriction.createMany({
+    data: [
+      { name: "Tirana Marathon weekend", startDate: eventFriday, endDate: addDays(eventFriday, 2), weekdays: [5, 6], minNights: 2 },
+      { name: "Festive season minimum stay", startDate: parseISODate(`${year}-12-20`), endDate: parseISODate(`${year + 1}-01-04`), minNights: 3 },
+      { name: "Christmas Eve", startDate: parseISODate(`${year}-12-24`), endDate: parseISODate(`${year}-12-25`), closedToArrival: true },
+      { name: "New Year private event", startDate: parseISODate(`${year}-12-30`), endDate: parseISODate(`${year + 1}-01-02`), roomTypeId: typeId("imperial-suite"), stopSell: true },
+      { name: "Summer weekend minimum stay", startDate: parseISODate(`${year + 1}-06-15`), endDate: parseISODate(`${year + 1}-09-16`), weekdays: [5, 6], minNights: 2 },
+    ],
+  });
 
   // ─── Room status & housekeeping ────────────────────────────────────────────
   console.log("Preparing housekeeping…");

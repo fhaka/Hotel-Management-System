@@ -11,6 +11,8 @@ import { nightlyRate } from "@/lib/pricing";
 import { round2 } from "@/lib/format";
 import { eachNight } from "@/lib/dates";
 import { RoomPicker } from "./room-picker";
+import { loadRestrictions } from "@/lib/reservations";
+import { restrictionViolation } from "@/lib/booking-rules";
 import { parseSelection, parseStaySearch } from "./search-params";
 
 export const metadata: Metadata = { title: "Book your stay" };
@@ -22,10 +24,11 @@ export default async function BookPage({ searchParams }: { searchParams: Promise
   const checkOut = parseISODate(search.checkOut);
   const nights = nightsBetween(checkIn, checkOut);
 
-  const [roomTypes, seasons, availability] = await Promise.all([
+  const [roomTypes, seasons, availability, rules] = await Promise.all([
     db.roomType.findMany({ where: { active: true }, orderBy: { sortOrder: "asc" } }),
     db.seasonalRate.findMany({ where: { startDate: { lt: checkOut }, endDate: { gt: checkIn } } }),
     availabilityByType(checkIn, checkOut),
+    loadRestrictions(checkIn, checkOut),
   ]);
 
   const rooms = roomTypes.map((rt) => ({
@@ -41,11 +44,13 @@ export default async function BookPage({ searchParams }: { searchParams: Promise
     roomTotal: round2(eachNight(checkIn, checkOut).reduce((s, d) => s + nightlyRate(rt, d, seasons).rate, 0)),
     nights,
     left: availability.get(rt.id) ?? 0,
+    blocked: restrictionViolation({ checkIn, checkOut, roomTypeId: rt.id }, rules),
   }));
-  const fitsOneRoom = rooms.some((r) => r.left > 0 && search.adults <= r.maxAdults && search.children <= r.maxChildren);
-  const anyAvailable = rooms.some((r) => r.left > 0);
+  const fitsOneRoom = rooms.some((r) => r.left > 0 && !r.blocked && search.adults <= r.maxAdults && search.children <= r.maxChildren);
+  const anyAvailable = rooms.some((r) => r.left > 0 && !r.blocked);
+  const ruleMessage = !anyAvailable ? rooms.find((r) => r.blocked)?.blocked : null;
   // Pre-select only what is actually available.
-  const initial = parseSelection(sp).filter((s) => rooms.some((r) => r.slug === s.slug && r.left >= s.qty));
+  const initial = parseSelection(sp).filter((s) => rooms.some((r) => r.slug === s.slug && r.left >= s.qty && !r.blocked));
 
   return (
     <div className="bg-ivory pt-28">
@@ -71,8 +76,8 @@ export default async function BookPage({ searchParams }: { searchParams: Promise
         )}
         {!anyAvailable && (
           <div className="mt-6 rounded-xl border border-border bg-white p-6 text-center">
-            <p className="font-serif text-2xl text-primary">We&apos;re fully booked for these dates</p>
-            <p className="mt-2 text-sm text-muted-foreground">Try different dates, or contact our reservations team — we may be able to help.</p>
+            <p className="font-serif text-2xl text-primary">{ruleMessage ? "Not bookable online for these dates" : "We’re fully booked for these dates"}</p>
+            <p className="mt-2 text-sm text-muted-foreground">{ruleMessage ?? "Try different dates, or contact our reservations team — we may be able to help."}</p>
             <ButtonLink href="/contact" variant="outline" className="mt-4">
               Contact reservations
             </ButtonLink>

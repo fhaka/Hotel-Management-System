@@ -24,6 +24,8 @@ export type PickerRoom = {
   roomTotal: number;
   nights: number;
   left: number;
+  /** Why the room type cannot be booked online for these dates (booking rule), if any. */
+  blocked: string | null;
 };
 
 export function RoomPicker({
@@ -59,7 +61,7 @@ export function RoomPicker({
       <div className="mt-8 space-y-5 pb-28">
         {rooms.map((rt) => {
           const n = qty[rt.slug] ?? 0;
-          const soldOut = rt.left === 0;
+          const soldOut = rt.left === 0 || !!rt.blocked;
           const singleFits = search.adults <= rt.maxAdults && search.children <= rt.maxChildren;
           return (
             <article
@@ -97,7 +99,7 @@ export function RoomPicker({
                 </div>
                 <div className="shrink-0 border-t border-border pt-5 lg:w-60 lg:border-l lg:border-t-0 lg:pl-6 lg:pt-0 lg:text-right">
                   {soldOut ? (
-                    <p className="text-sm font-medium text-muted-foreground">Sold out for these dates</p>
+                    <p className="text-sm font-medium text-muted-foreground">{rt.blocked ?? "Sold out for these dates"}</p>
                   ) : (
                     <>
                       <p className="text-xs uppercase tracking-wider text-muted-foreground">Per room, {pluralize(rt.nights, "night")}</p>

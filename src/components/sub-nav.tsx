@@ -7,7 +7,7 @@ import { cn } from "@/lib/utils";
 export function SubNav({ items }: { items: { href: string; label: string }[] }) {
   const pathname = usePathname();
   return (
-    <nav className="mb-6 flex gap-6 overflow-x-auto border-b border-border">
+    <nav className="scrollbar-thin mb-6 flex gap-6 overflow-x-auto overflow-y-hidden border-b border-border">
       {items.map((i) => {
         const active = pathname === i.href;
         return (

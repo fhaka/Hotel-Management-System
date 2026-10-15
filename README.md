@@ -47,6 +47,8 @@ offers one-click sign-in for each role.
 - Live availability search and pricing (weekday/weekend rates, seasons, city tax, VAT-inclusive)
 - **Multi-room bookings**: pick several rooms (and room types) in one booking, set guests and a name per room
 - **Company invoices**: guests can request an invoice to their company (name, NIPT / VAT ID, address)
+- **Promo codes** at checkout with a live discount preview; booking rules (minimum stay, closed to arrival, stop-sell)
+  are explained on the room search
 - Checkout with add-ons (breakfast, transfers, spa…), pay now by card or pay at the hotel
 - Instant confirmation page + confirmation email
 - Manage booking with confirmation number + email: view bill, download PDF invoice, cancel (policy-aware refunds)
@@ -66,7 +68,9 @@ offers one-click sign-in for each role.
 - **Guests** — CRM with VIP flag, preferences, ID details, stay history, lifetime value
 - **Companies** — corporate accounts with tax number, contact and billing details; stays, revenue and open balances;
   bill any reservation or group to a company
-- **Rooms & rates** — live room grid by floor, status & out-of-order, room types & rates editor, seasonal pricing
+- **Rooms & rates** — live room grid by floor, status & out-of-order, room types & rates editor, seasonal pricing,
+  **promotions** (percentage or per-night codes with booking/arrival windows, minimum nights, room types, usage limits and
+  redemption stats) and **booking rules** (minimum stay by arrival weekday, closed to arrival, stop-sell per room type)
 - **Housekeeping** — task board (to do / in progress / done), auto-tasks on check-out and out-of-order,
   stayover generation, assignment; completing a task updates the room status
 - **Services** — catalogue of extras used at booking and on folios, with 30-day revenue
@@ -88,6 +92,10 @@ offers one-click sign-in for each role.
   it is blocked while a departing guest is still in the room.
 - Group bookings: per-guest extras apply to every room, other extras once; a payment is split across rooms with an
   open balance. With one bill, only the last departure needs a settled group balance and it issues one group invoice.
+- Booking rules bind online bookings; staff bookings show the rule as a warning. Stop-sell blocks any stay touching a
+  closed night; minimum stay and closed-to-arrival apply to the arrival date (optionally only on chosen weekdays).
+- Promo codes discount room rates only (not extras or city tax), post a visible discount line on the folio, are
+  redeemed atomically against their usage limit, and are re-priced when a stay is modified.
 - Invoices are addressed to the company (with its NIPT / VAT ID) when the stay or group is billed to one.
 - Check-out requires a settled folio. Early departures are re-priced to the nights used. Check-out issues the invoice,
   emails it as a PDF, marks the room dirty and creates a cleaning task.

@@ -164,6 +164,7 @@ export default async function ReservationPage({ params }: { params: Promise<{ id
                 items={[
                   ["Guests", `${pluralize(r.adults, "adult")}${r.children ? `, ${pluralize(r.children, "child", "children")}` : ""}`],
                   ["Booking channel", SOURCE_LABEL[r.source]],
+                  ...(r.promoCode ? ([["Promo code", r.promoCode]] as [string, string][]) : []),
                   ["Booked", `${formatDateTime(r.createdAt)}${r.createdBy ? ` by ${r.createdBy.name}` : " online"}`],
                   ...(r.cancelledAt ? ([["Cancelled", `${formatDateTime(r.cancelledAt)} — ${r.cancellationReason ?? ""}`]] as [string, string][]) : []),
                 ]}

@@ -106,6 +106,11 @@ enum Priority {
   HIGH
 }
 
+enum PromoType {
+  PERCENT
+  FIXED_PER_NIGHT
+}
+
 enum EmailStatus {
   SENT
   FAILED
@@ -202,6 +207,7 @@ model RoomType {
   rooms         Room[]
   reservations  Reservation[]
   seasonalRates SeasonalRate[]
+  restrictions  StayRestriction[]
 }
 
 model Room {
@@ -236,6 +242,43 @@ model SeasonalRate {
   createdAt  DateTime  @default(now())
 }
 
+// Booking rules applied to online bookings for arrivals or nights in [startDate, endDate).
+// roomTypeId = null applies to every room type; weekdays (0 = Sunday) limit the rule to arrivals on those days.
+model StayRestriction {
+  id              String    @id @default(cuid())
+  name            String
+  startDate       DateTime  @db.Date
+  endDate         DateTime  @db.Date
+  roomTypeId      String?
+  roomType        RoomType? @relation(fields: [roomTypeId], references: [id], onDelete: Cascade)
+  weekdays        Int[]
+  minNights       Int?
+  closedToArrival Boolean   @default(false)
+  stopSell        Boolean   @default(false)
+  active          Boolean   @default(true)
+  createdAt       DateTime  @default(now())
+}
+
+// Discount codes for room rates. validFrom/validTo bound the booking date, stayFrom/stayTo the arrival date.
+model PromoCode {
+  id          String    @id @default(cuid())
+  code        String    @unique
+  description String
+  type        PromoType
+  value       Decimal   @db.Decimal(10, 2)
+  validFrom   DateTime? @db.Date
+  validTo     DateTime? @db.Date
+  stayFrom    DateTime? @db.Date
+  stayTo      DateTime? @db.Date
+  minNights   Int       @default(1)
+  roomTypeIds String[]
+  maxUses     Int?
+  usedCount   Int       @default(0)
+  active      Boolean   @default(true)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+}
+
 // ─── Reservations & billing ─────────────────────────────────────────────────
 
 model Reservation {
@@ -263,6 +306,7 @@ model Reservation {
   companyId          String?
   company            Company?          @relation(fields: [companyId], references: [id], onDelete: SetNull)
   occupantName       String?
+  promoCode          String?
   checkedInAt        DateTime?
   checkedOutAt       DateTime?
   cancelledAt        DateTime?

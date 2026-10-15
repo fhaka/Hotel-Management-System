@@ -7,7 +7,7 @@ export default async function RoomsLayout({ children }: { children: React.ReactN
   const user = await requireStaff("rooms");
   return (
     <>
-      <PageHeader title="Rooms & rates" description="Inventory, room status, pricing and seasons." />
+      <PageHeader title="Rooms & rates" description="Inventory, room status, pricing, promotions and booking rules." />
       <SubNav
         items={[
           { href: "/admin/rooms", label: "Rooms" },
@@ -15,6 +15,8 @@ export default async function RoomsLayout({ children }: { children: React.ReactN
             ? [
                 { href: "/admin/rooms/types", label: "Room types & rates" },
                 { href: "/admin/rooms/seasons", label: "Seasonal pricing" },
+                { href: "/admin/rooms/promotions", label: "Promotions" },
+                { href: "/admin/rooms/rules", label: "Booking rules" },
               ]
             : []),
         ]}

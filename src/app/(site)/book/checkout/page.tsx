@@ -11,6 +11,8 @@ import { DEMO_CARDS } from "@/lib/payments/demo";
 import { getSettings } from "@/lib/settings";
 import { distributeGuests, parseSelection, parseStaySearch, searchQuery, selectionParam } from "../search-params";
 import { CheckoutForm } from "./checkout-form";
+import { loadRestrictions } from "@/lib/reservations";
+import { restrictionViolation } from "@/lib/booking-rules";
 
 export const metadata: Metadata = { title: "Guest details & payment" };
 
@@ -41,6 +43,8 @@ export default async function CheckoutPage({ searchParams }: { searchParams: Pro
     return t && (availability.get(t.id) ?? 0) >= s.qty;
   });
   if (!enough || lines.length === 0) redirect(back);
+  const rules = await loadRestrictions(checkIn, checkOut);
+  if (types.some((t) => restrictionViolation({ checkIn, checkOut, roomTypeId: t.id }, rules))) redirect(back);
   const occupancy = distributeGuests(lines, search.adults, search.children) ?? lines.map((t) => ({ adults: Math.min(2, t.maxAdults), children: 0 }));
 
   const guest = user?.guest ? await db.guest.findUnique({ where: { id: user.guest.id } }) : null;

@@ -5,7 +5,8 @@ import { ACTIVE_STATUSES, findFreeRooms, isRoomFree } from "@/lib/availability";
 import { addDays, nightsBetween, today, toISODate } from "@/lib/dates";
 import { allocatePayment, summarizeFolio } from "@/lib/folio";
 import { round2, toNumber, formatMoney } from "@/lib/format";
-import { quoteStay, type Quote } from "@/lib/pricing";
+import { quoteStay, vatPortion, type Quote } from "@/lib/pricing";
+import { normalizePromoCode, promoAppliesTo, promoDiscount, promoLabel, promoProblem, restrictionViolation, type PromoLike } from "@/lib/booking-rules";
 import { getSettings, type HotelConfig } from "@/lib/settings";
 import { getPaymentProvider, type CardDetails } from "@/lib/payments";
 import { randomCode } from "@/lib/utils";
@@ -136,6 +137,9 @@ export type CreateBookingInput = {
   createdById?: string | null;
   allowPast?: boolean;
   payment?: PaymentInput;
+  promoCode?: string | null;
+  /** Apply stay restrictions (minimum stay, closed to arrival, stop-sell). Defaults to on for website bookings. */
+  enforceRestrictions?: boolean;
 };
 
 export type CreateReservationInput = StayRequest & Omit<CreateBookingInput, "rooms" | "checkIn" | "checkOut"> & { roomId?: string | null };
@@ -199,23 +203,63 @@ async function newGroupCode(tx: Tx) {
 }
 
 export type BookingQuote = {
-  rooms: (Quote & { roomTypeId: string; roomTypeName: string })[];
+  rooms: (Quote & { roomTypeId: string; roomTypeName: string; discount: number })[];
   total: number;
   vatIncluded: number;
+  discount: number;
+  promo: { code: string; label: string } | null;
   settings: HotelConfig;
 };
 
+// ─── Booking rules & promo codes ───────────────────────────────────────────
+
+/** Active stay restrictions that may affect a stay in [checkIn, checkOut). */
+export async function loadRestrictions(checkIn: Date, checkOut: Date) {
+  return db.stayRestriction.findMany({ where: { active: true, startDate: { lt: checkOut }, endDate: { gt: checkIn } }, orderBy: { startDate: "asc" } });
+}
+
+/** Throws when an online booking breaks a stay restriction (minimum stay, closed to arrival, stop-sell). */
+export async function assertBookable(stay: { checkIn: Date; checkOut: Date; roomTypeIds: string[] }) {
+  const rules = await loadRestrictions(stay.checkIn, stay.checkOut);
+  for (const roomTypeId of new Set(stay.roomTypeIds)) {
+    const problem = restrictionViolation({ checkIn: stay.checkIn, checkOut: stay.checkOut, roomTypeId }, rules);
+    if (problem) throw new BookingError(problem);
+  }
+}
+
+export function toPromoLike(p: NonNullable<Awaited<ReturnType<typeof db.promoCode.findUnique>>>): PromoLike {
+  return { ...p, value: toNumber(p.value) };
+}
+
+/** Looks up a promo code and checks it against a booking. Throws a user-facing error when it cannot be used. */
+export async function resolvePromo(code: string, b: { checkIn: Date; checkOut: Date; roomTypeIds: string[] }) {
+  const found = await db.promoCode.findUnique({ where: { code: normalizePromoCode(code) } });
+  if (!found) throw new BookingError("This promo code is not recognised.");
+  const promo = toPromoLike(found);
+  const problem = promoProblem(promo, { today: today(), ...b });
+  if (problem) throw new BookingError(problem);
+  return { id: found.id, ...promo };
+}
+
 /**
  * Prices every room of a booking. Per-guest extras (e.g. breakfast) apply to every room using that room's
- * guests; other extras (e.g. an airport transfer) are charged once, on the first room.
+ * guests; other extras (e.g. an airport transfer) are charged once, on the first room. A promo code
+ * discounts the room rate of every eligible room.
  */
-export async function quoteBooking(args: { checkIn: Date; checkOut: Date; rooms: Omit<RoomRequest, "roomId">[]; extraServiceIds?: string[] }): Promise<BookingQuote> {
+export async function quoteBooking(args: {
+  checkIn: Date;
+  checkOut: Date;
+  rooms: Omit<RoomRequest, "roomId">[];
+  extraServiceIds?: string[];
+  promoCode?: string | null;
+}): Promise<BookingQuote> {
   const typeIds = [...new Set(args.rooms.map((r) => r.roomTypeId))];
-  const [types, seasons, settings, extras] = await Promise.all([
+  const [types, seasons, settings, extras, promo] = await Promise.all([
     db.roomType.findMany({ where: { id: { in: typeIds } } }),
     db.seasonalRate.findMany({ where: { startDate: { lt: args.checkOut }, endDate: { gt: args.checkIn } } }),
     getSettings(),
     args.extraServiceIds?.length ? db.service.findMany({ where: { id: { in: args.extraServiceIds }, active: true, bookable: true } }) : [],
+    args.promoCode ? resolvePromo(args.promoCode, { checkIn: args.checkIn, checkOut: args.checkOut, roomTypeIds: typeIds }) : null,
   ]);
   const rooms = args.rooms.map((req, i) => {
     const roomType = types.find((t) => t.id === req.roomTypeId);
@@ -231,12 +275,22 @@ export async function quoteBooking(args: { checkIn: Date; checkOut: Date; rooms:
       cityTaxPerPersonNight: settings.cityTaxPerPersonNight,
       vatRate: settings.vatRate,
     });
-    return { ...quote, roomTypeId: roomType.id, roomTypeName: roomType.name };
+    const discount = promo && promoAppliesTo(promo, roomType.id) ? promoDiscount(promo, quote.roomTotal, quote.nightCount) : 0;
+    return {
+      ...quote,
+      total: round2(quote.total - discount),
+      vatIncluded: round2(quote.vatIncluded - vatPortion(discount, settings.vatRate)),
+      discount,
+      roomTypeId: roomType.id,
+      roomTypeName: roomType.name,
+    };
   });
   return {
     rooms,
     total: round2(rooms.reduce((s, r) => s + r.total, 0)),
     vatIncluded: round2(rooms.reduce((s, r) => s + r.vatIncluded, 0)),
+    discount: round2(rooms.reduce((s, r) => s + r.discount, 0)),
+    promo: promo ? { code: promo.code, label: promoLabel(promo) } : null,
     settings,
   };
 }
@@ -254,6 +308,9 @@ export async function createBooking(input: CreateBookingInput) {
   const roomTypes = new Map<string, Awaited<ReturnType<typeof validateStay>>>();
   for (const room of input.rooms) {
     roomTypes.set(room.roomTypeId, await validateStay({ ...room, checkIn: input.checkIn, checkOut: input.checkOut }, { allowPast: input.allowPast }));
+  }
+  if (input.enforceRestrictions ?? input.source === "WEBSITE") {
+    await assertBookable({ checkIn: input.checkIn, checkOut: input.checkOut, roomTypeIds: input.rooms.map((r) => r.roomTypeId) });
   }
   const quote = await quoteBooking(input);
   const { settings } = quote;
@@ -306,6 +363,7 @@ export async function createBooking(input: CreateBookingInput) {
               groupId: group?.id ?? null,
               companyId: company?.id ?? null,
               occupantName: req.occupantName?.trim() || null,
+              promoCode: quote.promo && quote.rooms[i]!.discount > 0 ? quote.promo.code : null,
               roomTypeId: req.roomTypeId,
               roomId,
               checkIn: input.checkIn,
@@ -337,8 +395,27 @@ export async function createBooking(input: CreateBookingInput) {
               postedById: input.createdById ?? null,
             });
           }
+          if (roomQuote.discount > 0 && quote.promo) {
+            charges.push({
+              reservationId: reservation.id,
+              type: "DISCOUNT",
+              description: `Promo ${quote.promo.code} — ${quote.promo.label}`,
+              date: input.checkIn,
+              quantity: 1,
+              unitPrice: -roomQuote.discount,
+              amount: -roomQuote.discount,
+              vatRate: settings.vatRate,
+              postedById: input.createdById ?? null,
+            });
+          }
           await tx.folioCharge.createMany({ data: charges });
           reservations.push(reservation);
+        }
+
+        if (quote.promo) {
+          // Atomic redemption: the code cannot be used beyond its limit even under concurrent bookings.
+          const redeemed = await tx.$executeRaw`UPDATE "PromoCode" SET "usedCount" = "usedCount" + 1 WHERE code = ${quote.promo.code} AND active AND ("maxUses" IS NULL OR "usedCount" < "maxUses")`;
+          if (redeemed === 0) throw new BookingError("This promo code has just been fully redeemed.");
         }
 
         if (input.payment) {
@@ -399,6 +476,8 @@ export async function createReservation(input: CreateReservationInput) {
  * If the booking cannot be created after a successful charge, the charge is refunded.
  */
 export async function bookOnline(input: Omit<CreateBookingInput, "payment" | "source"> & { card?: CardDetails }) {
+  // Validate rules and the promo before any card is charged.
+  await assertBookable({ checkIn: input.checkIn, checkOut: input.checkOut, roomTypeIds: input.rooms.map((r) => r.roomTypeId) });
   const quote = await quoteBooking(input);
   let payment: PaymentInput | undefined;
   if (input.card) {
@@ -550,10 +629,20 @@ async function repriceStay(tx: Tx, reservationId: string, postedById: string | n
   const r = await tx.reservation.findUniqueOrThrow({ where: { id: reservationId }, include: { roomType: true } });
   const { quote, settings } = await quoteReservation({ roomTypeId: r.roomTypeId, checkIn: r.checkIn, checkOut: r.checkOut, adults: r.adults, children: r.children });
   await tx.folioCharge.updateMany({
-    where: { reservationId, type: { in: ["ROOM", "CITY_TAX"] }, voided: false },
+    where: { reservationId, voided: false, OR: [{ type: { in: ["ROOM", "CITY_TAX"] } }, { type: "DISCOUNT", description: { startsWith: "Promo " } }] },
     data: { voided: true, voidReason: "Stay modified — re-priced" },
   });
-  await tx.folioCharge.createMany({ data: stayCharges(reservationId, r.roomType.name, quote, settings, r.adults, postedById) });
+  const charges = stayCharges(reservationId, r.roomType.name, quote, settings, r.adults, postedById);
+  // Keep the promo discount in step with the new room rate (the code was validated when it was booked).
+  const promoRow = r.promoCode ? await tx.promoCode.findUnique({ where: { code: r.promoCode } }) : null;
+  if (promoRow) {
+    const promo = toPromoLike(promoRow);
+    const discount = promoAppliesTo(promo, r.roomTypeId) ? promoDiscount(promo, quote.roomTotal, quote.nightCount) : 0;
+    if (discount > 0) {
+      charges.push({ reservationId, type: "DISCOUNT", description: `Promo ${promo.code} — ${promoLabel(promo)}`, date: r.checkIn, quantity: 1, unitPrice: -discount, amount: -discount, vatRate: settings.vatRate, postedById });
+    }
+  }
+  await tx.folioCharge.createMany({ data: charges });
 }
 
 export type CheckOutResult = { invoice: { number: string } | null; groupInvoice: boolean; groupId: string | null };
