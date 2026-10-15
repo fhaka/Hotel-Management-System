@@ -641,14 +641,83 @@ async function main() {
 
   // ─── Reviews, messages, audit ──────────────────────────────────────────────
   console.log("Adding reviews and messages…");
+  // Reviews: a handful of featured reviews plus reviews written after real stays in the history.
+  const manager = staff[1]!;
+  const featured = [
+    { guestName: "Giulia R.", country: "Italy", rating: 5, ratingRooms: 5, ratingService: 5, ratingCleanliness: 5, ratingValue: 4, title: "Elegance in the centre of Tirana", body: "Impeccable service from the moment we arrived. The Deluxe room had a stunning view of Mount Dajti and the breakfast was the best we had in the Balkans." },
+    { guestName: "James T.", country: "United Kingdom", rating: 5, ratingRooms: 5, ratingService: 5, ratingCleanliness: 5, ratingValue: 5, title: "A perfect business base", body: "Quiet rooms, fast Wi-Fi and a team that remembered my name on day two. The Imperial Lounge is a great spot for meetings." },
+    { guestName: "Anna M.", country: "Germany", rating: 5, ratingRooms: 5, ratingService: 5, ratingCleanliness: 5, ratingValue: 4, title: "Wonderful spa and staff", body: "The signature massage was outstanding. Every member of staff went out of their way to make our anniversary special." },
+    { guestName: "Michael J.", country: "United States", rating: 5, ratingRooms: 5, ratingService: 5, ratingCleanliness: 5, ratingValue: 4, title: "The Imperial Suite is unforgettable", body: "The terrace views at sunset were spectacular and the butler service was faultless. We will be back." },
+  ];
+  const pools: Record<number, { title: string; body: string }[]> = {
+    5: [
+      { title: "Exceptional from start to finish", body: "Warm welcome, a beautifully quiet room and a breakfast worth getting up early for. The concierge booked us a wonderful dinner in Blloku." },
+      { title: "Our favourite hotel in Tirana", body: "Third stay and it keeps getting better. Spotless rooms, great beds and staff who genuinely care. The spa is a hidden gem." },
+      { title: "Perfect city break", body: "Central location, elegant rooms and excellent cocktails in the lounge. Late check-out was arranged without any fuss." },
+      { title: "Faultless service", body: "Every request was handled quickly and with a smile. The room was immaculate and the rain shower was fantastic." },
+      { title: "Worth every euro", body: "Stylish, calm and very comfortable. Dinner at Saffron was a highlight — the lamb was superb." },
+      { title: "Felt like home", body: "The team remembered our names and our coffee order. Lovely touches throughout, from the turndown chocolates to the city tips." },
+    ],
+    4: [
+      { title: "Lovely stay, great location", body: "Comfortable room and friendly staff. Breakfast was excellent. Only small note: the gym could open a little earlier." },
+      { title: "Very good business hotel", body: "Fast Wi-Fi, good desk and quiet rooms. Check-in took a few minutes longer than expected, otherwise very smooth." },
+      { title: "Beautiful rooms", body: "Elegant design and a very comfortable bed. Parking was a bit tight but the valet handled it well." },
+      { title: "Relaxing weekend", body: "Enjoyed the pool and sauna. Room service was quick. Would love a few more vegetarian options on the dinner menu." },
+    ],
+    3: [
+      { title: "Good, but a few hiccups", body: "Great location and nice staff, but our room was not ready until 16:00 and the air conditioning was noisy during the first night." },
+      { title: "Mixed experience", body: "Breakfast and spa were lovely. However, street noise was noticeable from our Classic room on the first floor." },
+    ],
+    2: [{ title: "Expected more for the price", body: "The room was smaller than the photos suggested and we waited a long time for the bill at check-out. Staff were polite though." }],
+    1: [{ title: "Disappointing arrival", body: "Our reservation could not be found at first and we waited 40 minutes for a room. The manager apologised, but it spoiled our evening." }],
+  };
+  const replies: Record<number, string> = {
+    5: "Thank you so much for your wonderful words — we are delighted you enjoyed your stay and look forward to welcoming you back to Hotel Imperial.",
+    4: "Thank you for your kind review and for the helpful suggestion. We have shared it with the team and hope to see you again soon.",
+    3: "Thank you for your honest feedback. We are sorry that parts of your stay fell short; our team is reviewing room readiness and noise in the lower-floor rooms.",
+    2: "We are sorry to hear your stay did not meet expectations. Your feedback on check-out times has been passed to the front office team, and we would welcome the chance to do better.",
+    1: "Please accept our sincere apologies for the delay on arrival. We have reviewed what happened with our reservations team and would be glad to welcome you back as our guest.",
+  };
+  const ratingFor = () => {
+    const x = rand();
+    return x < 0.56 ? 5 : x < 0.86 ? 4 : x < 0.95 ? 3 : x < 0.99 ? 2 : 1;
+  };
+  const near = (r: number) => Math.max(1, Math.min(5, r + pick([-1, 0, 0, 0, 1])));
+  const stayed = reservations.filter((r) => r.status === "CHECKED_OUT" && r.checkOut < addDays(today, -1));
+  const sample = stayed.filter(() => chance(0.03)).slice(-45);
+  const reviewRows = sample.map((r, i) => {
+    const g = guestRows.find((x) => x.id === r.guestId)!;
+    const rating = i === sample.length - 6 ? 1 : i === sample.length - 2 ? 2 : ratingFor();
+    const text = pick(pools[rating]!);
+    // Written a few days after departure, but never in the future.
+    const createdAt = new Date(Math.min(addDays(r.checkOut, int(1, 5)).getTime() + int(8, 20) * 3_600_000, Date.now() - int(2, 30) * 3_600_000));
+    const recent = i >= sample.length - 4; // newest reviews wait for moderation
+    const status = recent ? "PENDING" : "PUBLISHED";
+    const reply = !recent && (rating <= 3 || chance(0.4));
+    return {
+      reservationId: r.id,
+      guestName: `${g.firstName} ${g.lastName.charAt(0)}.`,
+      country: g.country,
+      rating,
+      ratingRooms: near(rating),
+      ratingService: near(rating),
+      ratingCleanliness: near(rating),
+      ratingValue: near(rating),
+      title: text.title,
+      body: text.body,
+      status,
+      response: reply ? replies[rating] : null,
+      respondedAt: reply ? addDays(createdAt, 1) : null,
+      respondedById: reply ? manager.id : null,
+      createdAt,
+    } as const;
+  });
   await db.review.createMany({
     data: [
-      { guestName: "Giulia R.", country: "Italy", rating: 5, title: "Elegance in the centre of Tirana", body: "Impeccable service from the moment we arrived. The Deluxe room had a stunning view of Mount Dajti and the breakfast was the best we had in the Balkans." },
-      { guestName: "James T.", country: "United Kingdom", rating: 5, title: "A perfect business base", body: "Quiet rooms, fast Wi-Fi and a team that remembered my name on day two. The Imperial Lounge is a great spot for meetings." },
-      { guestName: "Anna M.", country: "Germany", rating: 5, title: "Wonderful spa and staff", body: "The signature massage was outstanding. Every member of staff went out of their way to make our anniversary special." },
-      { guestName: "Arta H.", country: "Albania", rating: 4, title: "Beautiful rooms, great location", body: "Walking distance to Skanderbeg Square and the Blloku district. Rooms are spotless and very comfortable." },
-      { guestName: "Michael J.", country: "United States", rating: 5, title: "The Imperial Suite is unforgettable", body: "The terrace views at sunset were spectacular and the butler service was faultless. We will be back." },
-      { guestName: "Camille D.", country: "France", rating: 5, title: "Cuisine raffinée", body: "Dinner at Saffron was a highlight of our trip — local flavours with real finesse." },
+      ...featured.map((f, i) => ({ ...f, status: "PUBLISHED" as const, createdAt: addDays(today, -200 - i * 35) })),
+      ...reviewRows,
+      // Spam is caught by moderation and kept hidden.
+      { guestName: "Best Deals", rating: 5, title: "Cheap flights here!!!", body: "Visit our website for the cheapest flights and hotel deals in the Balkans, click now for discount codes.", status: "HIDDEN" as const, createdAt: addDays(today, -9) },
     ],
   });
   await db.contactMessage.createMany({

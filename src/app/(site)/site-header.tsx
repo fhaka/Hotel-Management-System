@@ -12,6 +12,7 @@ const LINKS = [
   { href: "/rooms", label: "Rooms & Suites" },
   { href: "/experiences", label: "Dining & Spa" },
   { href: "/manage-booking", label: "Manage booking" },
+  { href: "/reviews", label: "Reviews" },
   { href: "/contact", label: "Contact" },
 ];
 

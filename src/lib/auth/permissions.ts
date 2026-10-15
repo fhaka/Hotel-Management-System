@@ -13,6 +13,7 @@ export const PERMISSIONS = {
   billing: FRONT_OFFICE,
   refunds: MANAGEMENT,
   messages: FRONT_OFFICE,
+  reviews: FRONT_OFFICE,
   rooms: STAFF_ROLES,
   manageRooms: MANAGEMENT,
   housekeeping: STAFF_ROLES,

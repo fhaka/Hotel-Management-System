@@ -1,6 +1,7 @@
 import "server-only";
 import { sendEmail } from "@/lib/email/mailer";
-import { bookingConfirmationEmail, cancellationEmail, checkoutEmail, preArrivalEmail, type EmailReservation } from "@/lib/email/templates";
+import { bookingConfirmationEmail, cancellationEmail, checkoutEmail, preArrivalEmail, reviewRequestEmail, type EmailReservation } from "@/lib/email/templates";
+import { reviewUrl } from "@/lib/reviews";
 import { invoiceSourceForGroup, invoiceSourceForReservation, renderInvoicePdf } from "@/lib/pdf/invoice";
 import { nightsBetween } from "@/lib/dates";
 import { emailData, getGroup, getReservation, summarizeGroup, type FullGroup } from "@/lib/reservations";
@@ -46,9 +47,18 @@ export async function sendGroupEmail(groupId: string, kind: ReservationEmailKind
     case "checkout": {
       const number = g.invoice?.number ?? g.code;
       const pdf = await renderInvoicePdf(invoiceSourceForGroup(g), hotel);
-      return sendEmail({ ...base, ...checkoutEmail(data, hotel, number), attachments: [{ filename: `${number}.pdf`, content: pdf, contentType: "application/pdf" }] });
+      // The booker reviews the group stay through its first room.
+      const link = g.reservations[0] ? await reviewUrl(g.reservations[0].id) : undefined;
+      return sendEmail({ ...base, ...checkoutEmail(data, hotel, number, link), attachments: [{ filename: `${number}.pdf`, content: pdf, contentType: "application/pdf" }] });
     }
   }
+}
+
+/** Invites a departed guest to review their stay (one review per reservation). */
+export async function sendReviewRequest(reservationId: string) {
+  const [r, hotel] = await Promise.all([getReservation(reservationId), getSettings()]);
+  if (!r?.guest.email) return false;
+  return sendEmail({ to: r.guest.email, template: "review-request", reservationId, ...reviewRequestEmail(r.guest.firstName, r, hotel, await reviewUrl(r.id)) });
 }
 
 /** Sends a guest email about a single reservation. Returns false when the guest has no email or sending failed. */
@@ -68,7 +78,7 @@ export async function sendReservationEmail(reservationId: string, kind: Reservat
     case "checkout": {
       const number = r.invoice?.number ?? r.code;
       const pdf = await renderInvoicePdf(invoiceSourceForReservation(r), hotel);
-      return sendEmail({ ...base, ...checkoutEmail(data, hotel, number), attachments: [{ filename: `${number}.pdf`, content: pdf, contentType: "application/pdf" }] });
+      return sendEmail({ ...base, ...checkoutEmail(data, hotel, number, await reviewUrl(r.id)), attachments: [{ filename: `${number}.pdf`, content: pdf, contentType: "application/pdf" }] });
     }
   }
 }

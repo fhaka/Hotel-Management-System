@@ -53,6 +53,9 @@ offers one-click sign-in for each role.
 - Instant confirmation page + confirmation email
 - Manage booking with confirmation number + email: view bill, download PDF invoice, cancel (policy-aware refunds)
 - Guest accounts: booking history, profile, password
+- **Guest reviews**: a personal, expiring link in the check-out email lets guests rate their stay (overall + rooms,
+  service, cleanliness, value) without signing in; a public reviews page shows the score, rating breakdown, filters and
+  the hotel's replies
 
 **Operations suite** (role-based)
 - **Dashboard** — occupancy tonight, guests in house, ADR, RevPAR, MTD revenue vs last month, 28-day occupancy chart,
@@ -73,6 +76,8 @@ offers one-click sign-in for each role.
   redemption stats) and **booking rules** (minimum stay by arrival weekday, closed to arrival, stop-sell per room type)
 - **Housekeeping** — task board (to do / in progress / done), auto-tasks on check-out and out-of-order,
   stayover generation, assignment; completing a task updates the room status
+- **Reviews** — moderation queue (publish / hide), public replies, low-rating alerts, average and 30-day scores, reply
+  rate and weakest category; send a review request from any departed reservation
 - **Services** — catalogue of extras used at booking and on folios, with 30-day revenue
 - **Billing** — payments, invoices, open balances, CSV export
 - **Reports** — date-range KPIs (occupancy, ADR, RevPAR), daily charts, room-type performance, channels,

@@ -59,6 +59,7 @@ export default async function SiteLayout({ children }: { children: React.ReactNo
               <li><Link href="/experiences#spa" className="hover:text-white">Imperial Spa</Link></li>
               <li><Link href="/book" className="hover:text-white">Check availability</Link></li>
               <li><Link href="/manage-booking" className="hover:text-white">Manage your booking</Link></li>
+              <li><Link href="/reviews" className="hover:text-white">Guest reviews</Link></li>
             </ul>
           </div>
           <div>

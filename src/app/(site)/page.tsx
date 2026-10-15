@@ -12,8 +12,8 @@ const IMG = (id: string, w = 1600) => `https://images.unsplash.com/photo-${id}?a
 export default async function HomePage() {
   const [roomTypes, reviews, rating] = await Promise.all([
     db.roomType.findMany({ where: { active: true }, orderBy: { sortOrder: "asc" } }),
-    db.review.findMany({ where: { published: true }, orderBy: { createdAt: "desc" }, take: 3 }),
-    db.review.aggregate({ where: { published: true }, _avg: { rating: true }, _count: true }),
+    db.review.findMany({ where: { status: "PUBLISHED", rating: { gte: 4 } }, orderBy: { createdAt: "desc" }, take: 3 }),
+    db.review.aggregate({ where: { status: "PUBLISHED" }, _avg: { rating: true }, _count: true }),
   ]);
 
   return (
@@ -163,7 +163,8 @@ export default async function HomePage() {
             <p className="eyebrow">Guest stories</p>
             <h2 className="mt-4 font-serif text-4xl text-primary sm:text-5xl">Loved by our guests</h2>
             <p className="mt-3 text-muted-foreground">
-              Rated {rating._avg.rating?.toFixed(1)} out of 5 from {rating._count} verified reviews
+              Rated {rating._avg.rating?.toFixed(1)} out of 5 from {rating._count} verified reviews ·{" "}
+              <Link href="/reviews" className="font-medium text-primary underline-offset-4 hover:underline">Read all reviews</Link>
             </p>
           </div>
           <div className="mt-14 grid gap-6 md:grid-cols-3">

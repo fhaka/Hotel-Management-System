@@ -1,7 +1,9 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { BedDouble, Building2, Crown, Download, LogIn, LogOut, Mail, Phone, UserX, Users } from "lucide-react";
+import { BedDouble, Building2, Crown, Download, LogIn, LogOut, Mail, Phone, Star, UserX, Users } from "lucide-react";
+import { Stars } from "@/components/stars";
+import { sendReviewRequestAction } from "../../reviews/actions";
 import { ActionButton } from "@/components/action-ui";
 import { PageHeader } from "@/components/page-header";
 import { PAYMENT_METHOD_LABEL, ReservationStatusBadge, RoomStatusBadge, SOURCE_LABEL } from "@/components/status";
@@ -30,7 +32,7 @@ export default async function ReservationPage({ params }: { params: Promise<{ id
 
   const t = today();
   const active = ["PENDING", "CONFIRMED", "CHECKED_IN"].includes(r.status);
-  const [freeRooms, roomTypes, services, history, emails, companies, siblings] = await Promise.all([
+  const [freeRooms, roomTypes, services, history, emails, companies, siblings, review] = await Promise.all([
     active ? findFreeRooms(db, { roomTypeId: r.roomTypeId, checkIn: r.checkIn, checkOut: r.checkOut, excludeReservationId: r.id }) : [],
     db.roomType.findMany({ where: { active: true }, orderBy: { sortOrder: "asc" }, select: { id: true, name: true, maxAdults: true, maxChildren: true } }),
     db.service.findMany({ where: { active: true }, orderBy: [{ category: "asc" }, { name: "asc" }] }),
@@ -38,6 +40,7 @@ export default async function ReservationPage({ params }: { params: Promise<{ id
     db.emailLog.findMany({ where: { reservationId: r.id }, orderBy: { createdAt: "desc" }, take: 10 }),
     db.company.findMany({ orderBy: { name: "asc" }, select: { id: true, name: true, taxId: true } }),
     r.groupId ? db.reservation.findMany({ where: { groupId: r.groupId }, select: { id: true, status: true, room: { select: { number: true } } }, orderBy: { createdAt: "asc" } }) : [],
+    db.review.findUnique({ where: { reservationId: r.id } }),
   ]);
   const groupBill = r.group?.singleBill ? await groupFolio(db, r.group.id) : null;
   const othersStaying = siblings.filter((x) => x.id !== r.id && ["PENDING", "CONFIRMED", "CHECKED_IN"].includes(x.status)).length;
@@ -348,6 +351,33 @@ export default async function ReservationPage({ params }: { params: Promise<{ id
               {r.occupantName && <p className="mt-2 text-muted-foreground">Room guest: <span className="font-medium text-foreground">{r.occupantName}</span></p>}
             </CardBody>
           </Card>
+
+          {(r.status === "CHECKED_OUT" || review) && (
+            <Card>
+              <CardHeader title="Guest review" action={review && can(user.role, "reviews") ? <ButtonLink href={`/admin/reviews?status=${review.status}`} variant="ghost" size="sm">Moderate</ButtonLink> : null} />
+              <CardBody className="text-sm">
+                {review ? (
+                  <>
+                    <div className="flex items-center gap-2">
+                      <Stars value={review.rating} size="md" />
+                      <Badge tone={review.status === "PUBLISHED" ? "success" : review.status === "PENDING" ? "warning" : "neutral"}>{review.status.toLowerCase()}</Badge>
+                    </div>
+                    <p className="mt-2 font-medium">“{review.title}”</p>
+                    <p className="mt-1 line-clamp-4 text-muted-foreground">{review.body}</p>
+                  </>
+                ) : (
+                  <div className="space-y-3">
+                    <p className="text-muted-foreground">No review yet. The check-out email invites the guest to rate their stay.</p>
+                    {r.guest.email && can(user.role, "reviews") && (
+                      <ActionButton size="sm" variant="outline" action={sendReviewRequestAction.bind(null, r.id)}>
+                        <Star /> Send review request
+                      </ActionButton>
+                    )}
+                  </div>
+                )}
+              </CardBody>
+            </Card>
+          )}
 
           <Card>
             <CardHeader title="Requests & notes" />

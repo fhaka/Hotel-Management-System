@@ -20,6 +20,7 @@ import {
   Search,
   Settings,
   Sparkles,
+  Star,
   UserCog,
   Users,
   Wine,
@@ -31,7 +32,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel,
 import { cn } from "@/lib/utils";
 import type { NavGroup } from "./nav";
 
-const ICONS = { BedDouble, BookOpenCheck, Building2, CalendarRange, ChartColumnBig, ConciergeBell, History, Inbox, LayoutDashboard, Receipt, Settings, Sparkles, UserCog, Users, Wine };
+const ICONS = { BedDouble, BookOpenCheck, Building2, CalendarRange, ChartColumnBig, ConciergeBell, History, Inbox, LayoutDashboard, Receipt, Settings, Sparkles, Star, UserCog, Users, Wine };
 
 type ShellUser = { name: string; email: string; roleLabel: string };
 

@@ -1,7 +1,8 @@
 import type { Metadata } from "next";
 import Image from "next/image";
 import Link from "next/link";
-import { CalendarPlus, ChevronRight } from "lucide-react";
+import { CalendarPlus, ChevronRight, Star } from "lucide-react";
+import { signReviewToken } from "@/lib/reviews";
 import { ReservationStatusBadge } from "@/components/status";
 import { ButtonLink } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/primitives";
@@ -18,7 +19,7 @@ export default async function AccountPage() {
   const reservations = user.guest
     ? await db.reservation.findMany({
         where: { guestId: user.guest.id },
-        include: { roomType: true, charges: true, payments: true, group: { select: { code: true, _count: { select: { reservations: true } } } } },
+        include: { roomType: true, charges: true, payments: true, review: { select: { rating: true } }, group: { select: { code: true, _count: { select: { reservations: true } } } } },
         orderBy: { checkIn: "desc" },
       })
     : [];
@@ -28,6 +29,12 @@ export default async function AccountPage() {
   const list = reservations.filter((r) => !r.groupId || (!seenGroups.has(r.groupId) && seenGroups.add(r.groupId)));
   const upcoming = list.filter((r) => ["CONFIRMED", "PENDING", "CHECKED_IN"].includes(r.status) && r.checkOut >= t).reverse();
   const past = list.filter((r) => !upcoming.includes(r));
+  // Personal review links for recent stays that haven't been reviewed yet.
+  const reviewLinks = new Map(
+    await Promise.all(
+      past.filter((r) => r.status === "CHECKED_OUT" && !r.review).slice(0, 5).map(async (r) => [r.id, `/review/${await signReviewToken(r.id)}`] as const),
+    ),
+  );
 
   if (reservations.length === 0) {
     return (
@@ -60,14 +67,27 @@ export default async function AccountPage() {
       {past.length > 0 && (
         <section>
           <h2 className="font-serif text-2xl text-primary">Past & cancelled</h2>
-          <div className="mt-4 space-y-3">{past.map((r) => <BookingCard key={r.id} r={r} compact />)}</div>
+          <div className="mt-4 space-y-3">
+            {past.map((r) => (
+              <div key={r.id}>
+                <BookingCard r={r} compact />
+                {reviewLinks.has(r.id) ? (
+                  <Link href={reviewLinks.get(r.id)!} className="ml-32 mt-1 inline-flex items-center gap-1.5 text-sm font-medium text-[#8a6a32] hover:underline">
+                    <Star className="size-4 fill-gold text-gold" /> Rate your stay
+                  </Link>
+                ) : r.review ? (
+                  <p className="ml-32 mt-1 text-xs text-muted-foreground">You rated this stay {r.review.rating}/5 — thank you!</p>
+                ) : null}
+              </div>
+            ))}
+          </div>
         </section>
       )}
     </div>
   );
 }
 
-type Row = Awaited<ReturnType<typeof db.reservation.findMany<{ include: { roomType: true; charges: true; payments: true; group: { select: { code: true; _count: { select: { reservations: true } } } } } }>>>[number];
+type Row = Awaited<ReturnType<typeof db.reservation.findMany<{ include: { roomType: true; charges: true; payments: true; review: { select: { rating: true } }; group: { select: { code: true; _count: { select: { reservations: true } } } } } }>>>[number];
 
 function BookingCard({ r, compact }: { r: Row; compact?: boolean }) {
   const folio = summarizeFolio(r);

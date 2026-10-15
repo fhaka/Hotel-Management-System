@@ -14,17 +14,18 @@ export default async function AdminLayout({ children }: { children: React.ReactN
   const nav = NAV.map((g) => ({ ...g, items: g.items.filter((i) => can(user.role, i.permission)) })).filter((g) => g.items.length);
 
   const d = today();
-  const [arrivals, unread, tasks] = await Promise.all([
+  const [arrivals, unread, tasks, pendingReviews] = await Promise.all([
     can(user.role, "frontDesk") ? db.reservation.count({ where: { checkIn: d, status: "CONFIRMED" } }) : 0,
     can(user.role, "messages") ? db.contactMessage.count({ where: { handled: false } }) : 0,
     db.housekeepingTask.count({ where: { status: { not: "DONE" }, dueDate: { lte: d } } }),
+    can(user.role, "reviews") ? db.review.count({ where: { status: "PENDING" } }) : 0,
   ]);
 
   return (
     <AdminShell
       nav={nav}
       user={{ name: user.name, email: user.email, roleLabel: ROLE_LABELS[user.role] }}
-      badges={{ "/admin/front-desk": arrivals, "/admin/messages": unread, "/admin/housekeeping": tasks }}
+      badges={{ "/admin/front-desk": arrivals, "/admin/messages": unread, "/admin/housekeeping": tasks, "/admin/reviews": pendingReviews }}
       logoutAction={logout}
     >
       {children}

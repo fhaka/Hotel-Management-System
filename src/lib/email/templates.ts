@@ -124,7 +124,7 @@ export function preArrivalEmail(r: EmailReservation, hotel: HotelConfig) {
   };
 }
 
-export function checkoutEmail(r: EmailReservation, hotel: HotelConfig, invoiceNumber: string) {
+export function checkoutEmail(r: EmailReservation, hotel: HotelConfig, invoiceNumber: string, reviewLink?: string) {
   return {
     subject: `Thank you for staying with us — invoice ${invoiceNumber}`,
     html: layout(
@@ -136,7 +136,22 @@ export function checkoutEmail(r: EmailReservation, hotel: HotelConfig, invoiceNu
           ["Stay", `${formatLongDate(r.checkIn)} – ${formatLongDate(r.checkOut)}`],
           ["Total", formatMoney(r.total)],
         ]) +
-        p("We would love to hear about your stay, and we hope to see you again soon."),
+        p("We would love to hear about your stay, and we hope to see you again soon.") +
+        (reviewLink ? button(reviewLink, "Rate your stay") : ""),
+    ),
+  };
+}
+
+export function reviewRequestEmail(firstName: string, stay: { checkIn: Date; checkOut: Date }, hotel: HotelConfig, reviewLink: string) {
+  return {
+    subject: "How was your stay at Hotel Imperial?",
+    html: layout(
+      hotel,
+      `How was your stay, ${esc(firstName)}?`,
+      p(`Thank you for staying with us from ${formatLongDate(stay.checkIn)} to ${formatLongDate(stay.checkOut)}.`) +
+        p("Your feedback helps our team and future guests. It only takes a minute — rate your room, our service, cleanliness and value, and tell us what stood out.") +
+        button(reviewLink, "Write a review") +
+        p('<span style="color:#6b7280;font-size:13px">This personal link is valid for 90 days and can be used once.</span>'),
     ),
   };
 }
